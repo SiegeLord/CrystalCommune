@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{astar, components as comps, game_state, sprite, utils};
+use crate::{astar, components as comps, controls, game_state, sprite, utils};
 use allegro::*;
 use na::{
 	Isometry3, Matrix4, Perspective3, Point2, Point3, Quaternion, RealField, Rotation2, Rotation3,
@@ -139,7 +139,7 @@ pub fn spawn_agent<T: Rng>(
 			time_to_think: 0.,
 			time_to_work: 0.,
 			cur_provider: None,
-            house: None,
+			house: None,
 		},
 	));
 	Ok(entity)
@@ -152,9 +152,9 @@ pub fn spawn_provider(
 {
 	let sprite = match kind
 	{
-		comps::ProviderKind::EmptyHouse => "data/crystal1.cfg",
-		comps::ProviderKind::TakenHouse(_) => "data/crystal1.cfg",
-		comps::ProviderKind::Work => "data/crystal2.cfg",
+		comps::ProviderKind::EmptyHouse => "data/house1.cfg",
+		comps::ProviderKind::TakenHouse(_) => "data/house1.cfg",
+		comps::ProviderKind::Work => "data/house1.cfg",
 	};
 	let entity = world.spawn((
 		comps::Position {
@@ -168,6 +168,26 @@ pub fn spawn_provider(
 			kind: kind,
 			num_occupants: 0,
 			max_occupants: 1,
+		},
+	));
+	Ok(entity)
+}
+
+pub fn spawn_building_placement(
+	tile_pos: Point2<i32>, kind: comps::ProviderKind, world: &mut hecs::World,
+) -> Result<hecs::Entity>
+{
+	let (width, height) = kind.get_size();
+	let entity = world.spawn((
+		comps::Position {
+			pos: tile_to_pixel(tile_pos),
+			dir: 0,
+		},
+		comps::BuildingPlacement {
+			width: width,
+			height: height,
+			valid: vec![false; (width * height) as usize],
+			kind: kind,
 		},
 	));
 	Ok(entity)
@@ -192,6 +212,8 @@ struct Map
 	terrain: Vec<bool>,
 	world: hecs::World,
 	rng: StdRng,
+	mouse_pos: Point2<i32>,
+	building_placement: Option<hecs::Entity>,
 }
 
 impl Map
@@ -206,6 +228,8 @@ impl Map
 		state.cache_sprite("data/cat1.cfg")?;
 		state.cache_sprite("data/crystal1.cfg")?;
 		state.cache_sprite("data/crystal2.cfg")?;
+		state.cache_sprite("data/house1.cfg")?;
+		state.cache_sprite("data/building_placement.cfg")?;
 
 		for y in 0..size
 		{
@@ -217,7 +241,8 @@ impl Map
 				}
 				else
 				{
-					true
+					//true
+					rng.gen_bool(0.9)
 				};
 				terrain.push(val)
 			}
@@ -229,42 +254,126 @@ impl Map
 		let from = Point2::new(9, 0);
 		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
 
-		spawn_provider(
-			Point2::new(7, 7),
+		let building_placement = spawn_building_placement(
+			Point2::new(5, 5),
 			comps::ProviderKind::EmptyHouse,
 			&mut world,
-			state,
 		)?;
-		spawn_provider(
-			Point2::new(6, 2),
-			comps::ProviderKind::EmptyHouse,
-			&mut world,
-			state,
-		)?;
-		spawn_provider(
-			Point2::new(2, 6),
-			comps::ProviderKind::Work,
-			&mut world,
-			state,
-		)?;
-		spawn_provider(
-			Point2::new(4, 5),
-			comps::ProviderKind::Work,
-			&mut world,
-			state,
-		)?;
+
+		//spawn_provider(
+		//	Point2::new(7, 7),
+		//	comps::ProviderKind::EmptyHouse,
+		//	&mut world,
+		//	state,
+		//)?;
+		//spawn_provider(
+		//	Point2::new(6, 2),
+		//	comps::ProviderKind::EmptyHouse,
+		//	&mut world,
+		//	state,
+		//)?;
+		//spawn_provider(
+		//	Point2::new(2, 6),
+		//	comps::ProviderKind::Work,
+		//	&mut world,
+		//	state,
+		//)?;
+		//spawn_provider(
+		//	Point2::new(4, 5),
+		//	comps::ProviderKind::Work,
+		//	&mut world,
+		//	state,
+		//)?;
 
 		Ok(Self {
 			size: size,
 			terrain: terrain,
 			world: world,
 			rng: rng,
+			mouse_pos: Point2::new(0, 0),
+			building_placement: Some(building_placement),
 		})
 	}
 
 	fn logic(&mut self, state: &mut game_state::GameState)
 		-> Result<Option<game_state::NextScreen>>
 	{
+		// Input.
+		if self.building_placement.is_none()
+			&& state
+				.controls
+				.get_action_state(controls::Action::BuildHouse)
+				> 0.5
+		{
+			let building_placement = spawn_building_placement(
+				Point2::new(5, 5),
+				comps::ProviderKind::EmptyHouse,
+				&mut self.world,
+			)?;
+			self.building_placement = Some(building_placement);
+		}
+
+		// Maps.
+		let mut buildable = self.terrain.clone();
+		let mut walkable = self.terrain.clone();
+		for (_, (position, provider)) in self
+			.world
+			.query::<(&comps::Position, &comps::Provider)>()
+			.iter()
+		{
+			let tile_pos = pixel_to_tile(position.pos);
+			let (width, height) = provider.kind.get_size();
+			let start_x = tile_pos.x - width / 2;
+			let start_y = tile_pos.y - height + 1;
+			for y in 0..height
+			{
+				for x in 0..width
+				{
+                    let cur_tile_pos = Point2::new(start_x + x, start_y + y);
+					if let Some(idx) = tile_to_idx(cur_tile_pos, self.size)
+					{
+						buildable[idx] = false;
+                        walkable[idx] = cur_tile_pos == tile_pos;
+					}
+				}
+			}
+		}
+		for (_, (position, _)) in self
+			.world
+			.query::<(&comps::Position, &comps::Agent)>()
+			.iter()
+		{
+			let tile_pos = pixel_to_tile(position.pos);
+			if let Some(idx) = tile_to_idx(Point2::new(tile_pos.x, tile_pos.y), self.size)
+			{
+				buildable[idx] = false;
+			}
+		}
+
+		// BuildingPlacement
+		if let Some(building_placement) = self.building_placement
+		{
+			let (position, building_placement) = self
+				.world
+				.query_one_mut::<(&mut comps::Position, &mut comps::BuildingPlacement)>(
+					building_placement,
+				)
+				.unwrap();
+			let tile_pos = pixel_to_tile(self.mouse_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2);
+			let start_x = tile_pos.x - building_placement.width / 2;
+			let start_y = tile_pos.y - building_placement.height + 1;
+			for y in 0..building_placement.height
+			{
+				for x in 0..building_placement.width
+				{
+					let free = tile_to_idx(Point2::new(x + start_x, y + start_y), self.size)
+						.map_or(false, |idx| buildable[idx]);
+					building_placement.valid[(x + y * building_placement.width) as usize] = free;
+				}
+			}
+			position.pos = tile_to_pixel(tile_pos);
+		}
+
 		// TilePath
 		for (id, (position, can_move, tile_path)) in self
 			.world
@@ -376,7 +485,7 @@ impl Map
 						+ Vector2::new(self.rng.gen_range(-3..=3), self.rng.gen_range(-3..=3));
 					target.x = utils::clamp(target.x, 0, self.size as i32 - 1);
 					target.y = utils::clamp(target.y, 0, self.size as i32 - 1);
-					let cand_tile_path = get_tile_path(cur_pos, target, self.size, &self.terrain);
+					let cand_tile_path = get_tile_path(cur_pos, target, self.size, &walkable);
 					tile_path.tile_path = cand_tile_path;
 					can_move.moving = true;
 
@@ -418,7 +527,7 @@ impl Map
 								pixel_to_tile(position.pos),
 								*provider_pos,
 								self.size,
-								&self.terrain,
+								&walkable,
 							);
 							if !cand_tile_path.is_empty()
 							{
@@ -468,6 +577,52 @@ impl Map
 		&mut self, event: &Event, state: &mut game_state::GameState,
 	) -> Result<Option<game_state::NextScreen>>
 	{
+		state.controls.decode_event(event);
+		match *event
+		{
+			Event::MouseAxes { x, y, .. } =>
+			{
+				let (x, y) = state.transform_mouse(x as f32, y as f32);
+				self.mouse_pos = Point2::new(x as i32, y as i32);
+			}
+			Event::KeyDown {
+				keycode: KeyCode::Escape,
+				..
+			} =>
+			{
+				if let Some(building_placement) = self.building_placement.take()
+				{
+					self.world.despawn(building_placement)?;
+				}
+			}
+			Event::MouseButtonDown { button, .. } =>
+			{
+				if button == 1
+				{
+					let mut spawn = None;
+					if let Some(building_placement) = self.building_placement
+					{
+						let (position, building_placement) = self
+							.world
+							.query_one_mut::<(&mut comps::Position, &mut comps::BuildingPlacement)>(
+								building_placement,
+							)
+							.unwrap();
+						if building_placement.valid.iter().all(|x| *x)
+						{
+							spawn = Some((pixel_to_tile(position.pos), building_placement.kind));
+						}
+					}
+					if let Some((position, kind)) = spawn
+					{
+						spawn_provider(position, kind, &mut self.world, state)?;
+						self.world
+							.despawn(self.building_placement.take().unwrap())?;
+					}
+				}
+			}
+			_ => (),
+		}
 		Ok(None)
 	}
 
@@ -550,6 +705,34 @@ impl Map
 				},
 				state,
 			);
+		}
+
+		if let Some(building_placement) = self.building_placement
+		{
+			let (position, building_placement) = self
+				.world
+				.query_one_mut::<(&mut comps::Position, &mut comps::BuildingPlacement)>(
+					building_placement,
+				)
+				.unwrap();
+			let sprite = state.get_sprite("data/building_placement.cfg").unwrap();
+			let tile_pos = pixel_to_tile(position.pos);
+			let start_x = tile_pos.x - building_placement.width / 2;
+			let start_y = tile_pos.y - building_placement.height + 1;
+			for y in 0..building_placement.height
+			{
+				for x in 0..building_placement.width
+				{
+					let pos = tile_to_pixel(Point2::new(start_x + x, start_y + y));
+					sprite.draw(
+						to_f32(pos),
+						(!building_placement.valid[(x + y * building_placement.width) as usize])
+							as i32,
+						Color::from_rgb_f(1., 1., 1.),
+						state,
+					);
+				}
+			}
 		}
 		state.core.hold_bitmap_drawing(false);
 		Ok(())

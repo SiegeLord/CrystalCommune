@@ -6,13 +6,7 @@ use std::fmt;
 #[derive(PartialEq, Eq, Hash, Serialize, Deserialize, Copy, Clone, Debug, PartialOrd, Ord)]
 pub enum Action
 {
-	TurnLeft,
-	TurnRight,
-	Ascend,
-	Descend,
-	DropWater,
-	Restart,
-	Minimap,
+	BuildHouse,
 }
 
 impl Action
@@ -21,13 +15,7 @@ impl Action
 	{
 		match self
 		{
-			Action::TurnLeft => "TURN LEFT",
-			Action::TurnRight => "TURN RIGHT",
-			Action::Ascend => "ASCEND",
-			Action::Descend => "DESCEND",
-			Action::DropWater => "DROP WATER",
-			Action::Restart => "RESTART",
-			Action::Minimap => "MINIMAP",
+			Action::BuildHouse => "BUILD HOUSE",
 		}
 	}
 }
@@ -475,32 +463,8 @@ impl Controls
 	{
 		let mut action_to_inputs = BTreeMap::new();
 		action_to_inputs.insert(
-			Action::TurnLeft,
-			[Some(Input::Keyboard(allegro::KeyCode::Left)), None],
-		);
-		action_to_inputs.insert(
-			Action::TurnRight,
-			[Some(Input::Keyboard(allegro::KeyCode::Right)), None],
-		);
-		action_to_inputs.insert(
-			Action::Ascend,
-			[Some(Input::Keyboard(allegro::KeyCode::Up)), None],
-		);
-		action_to_inputs.insert(
-			Action::Descend,
-			[Some(Input::Keyboard(allegro::KeyCode::Down)), None],
-		);
-		action_to_inputs.insert(
-			Action::DropWater,
-			[Some(Input::Keyboard(allegro::KeyCode::Space)), None],
-		);
-		action_to_inputs.insert(
-			Action::Restart,
-			[Some(Input::Keyboard(allegro::KeyCode::R)), None],
-		);
-		action_to_inputs.insert(
-			Action::Minimap,
-			[Some(Input::Keyboard(allegro::KeyCode::Tab)), None],
+			Action::BuildHouse,
+			[Some(Input::Keyboard(allegro::KeyCode::B)), None],
 		);
 
 		Self {

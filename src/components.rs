@@ -42,6 +42,19 @@ pub enum ProviderKind
 	Work,
 }
 
+impl ProviderKind
+{
+    pub fn get_size(&self) -> (i32, i32)
+    {
+        match self
+        {
+            ProviderKind::TakenHouse(_) => (3, 2),
+            ProviderKind::EmptyHouse => (3, 2),
+            ProviderKind::Work => (3, 3),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Provider
 {
@@ -57,4 +70,13 @@ pub struct Agent
     pub time_to_work: f64,
     pub cur_provider: Option<hecs::Entity>,
     pub house: Option<hecs::Entity>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingPlacement
+{
+    pub width: i32,
+    pub height: i32,
+    pub valid: Vec<bool>,
+    pub kind: ProviderKind,
 }
