@@ -9,7 +9,7 @@ use serde::ser::Serialize;
 use slr_config::{from_element, to_element, ConfigElement, Source};
 use std::{fs, path};
 
-pub const DT: f32 = 1. / 120.;
+pub const DT: f32 = 1. / 30.;
 pub const PI: f32 = std::f32::consts::PI;
 pub type Vec2D = nalgebra::Vector2<f32>;
 pub type Vec3D = nalgebra::Vector3<f32>;

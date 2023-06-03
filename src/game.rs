@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{game_state, sprite};
+use crate::{astar, components as comps, game_state, sprite};
 use allegro::*;
 use na::{
 	Isometry3, Matrix4, Perspective3, Point2, Point3, Quaternion, RealField, Rotation2, Rotation3,
@@ -8,7 +8,7 @@ use na::{
 use nalgebra as na;
 use rand::prelude::*;
 
-static TILE_WIDTH: usize = 16;
+static TILE_SIZE: i32 = 16;
 
 pub struct Game
 {
@@ -44,12 +44,6 @@ impl Game
 		self.map.draw(state)?;
 		Ok(())
 	}
-}
-
-struct Map
-{
-	size: usize,
-	terrain: Vec<bool>,
 }
 
 #[rustfmt::skip]
@@ -95,9 +89,67 @@ fn decode_tile<T: Rng>(vals: [i32; 4], rng: &mut T) -> i32
     }
 }
 
-fn xy_to_idx(x: usize, y: usize, size: usize) -> usize
+fn tile_to_idx(tile_pos: Point2<i32>, size: usize) -> Option<usize>
 {
-	y * size + x
+	if tile_pos.x < 0 || tile_pos.y < 0 || tile_pos.x >= size as i32 || tile_pos.y >= size as i32
+	{
+		None
+	}
+	else
+	{
+		Some((tile_pos.y * size as i32 + tile_pos.x) as usize)
+	}
+}
+
+fn tile_to_pixel(tile_pos: Point2<i32>) -> Point2<i32>
+{
+	tile_pos * TILE_SIZE
+}
+
+fn to_f32(pos: Point2<i32>) -> Point2<f32>
+{
+	Point2::new(pos.x as f32, pos.y as f32)
+}
+
+pub fn spawn_agent<T: Rng>(
+	tile_pos: Point2<i32>, world: &mut hecs::World, state: &mut game_state::GameState, rng: &mut T,
+) -> Result<hecs::Entity>
+{
+	let entity = world.spawn((
+		comps::Position {
+			pos: tile_to_pixel(tile_pos),
+			dir: 0,
+		},
+		comps::TilePath {
+			tile_path: vec![tile_pos + Vector2::new(2, 0)],
+		},
+		comps::AgentDraw {
+			sprite: "data/cat1.cfg".to_string(),
+		},
+        comps::CanMove { moving: false }
+	));
+
+	Ok(entity)
+}
+
+pub fn get_tile_path(
+	from: Point2<i32>, to: Point2<i32>, size: usize, walkable: &[bool],
+) -> Vec<Point2<i32>>
+{
+	let mut ctx = astar::AStarContext::new(size);
+	ctx.solve(
+		from,
+		to,
+		|pos| tile_to_idx(pos, size).map_or(true, |idx| !walkable[idx]),
+		|pos| 1.,
+	)
+}
+
+struct Map
+{
+	size: usize,
+	terrain: Vec<bool>,
+	world: hecs::World,
 }
 
 impl Map
@@ -107,7 +159,10 @@ impl Map
 		let size = 16;
 		let mut terrain = Vec::with_capacity(size * size);
 		let mut rng = StdRng::seed_from_u64(0);
+
 		state.cache_sprite("data/terrain.cfg")?;
+		state.cache_sprite("data/cat1.cfg")?;
+
 		for y in 0..size
 		{
 			for x in 0..size
@@ -118,21 +173,74 @@ impl Map
 				}
 				else
 				{
-					rng.gen_bool(0.8)
+					rng.gen_bool(0.7)
 				};
 				terrain.push(val)
 			}
+		}
+        let from = Point2::new(1, 1);
+        terrain[tile_to_idx(from, size).unwrap()] = true;
+
+		let mut world = hecs::World::new();
+		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
+		{
+			let mut tile_path = world.get::<&mut comps::TilePath>(agent).unwrap();
+            tile_path.tile_path = get_tile_path(from, Point2::new(8, 8), size, &terrain);
+            println!("Here {:?}", tile_path.tile_path);
 		}
 
 		Ok(Self {
 			size: size,
 			terrain: terrain,
+			world: world,
 		})
 	}
 
 	fn logic(&mut self, state: &mut game_state::GameState)
 		-> Result<Option<game_state::NextScreen>>
 	{
+		for (_, (position, can_move, tile_path)) in self
+			.world
+			.query::<(&mut comps::Position, &mut comps::CanMove, &mut comps::TilePath)>()
+			.iter()
+		{
+			if tile_path.tile_path.is_empty()
+			{
+                can_move.moving = false;
+				continue;
+			}
+
+			let target_tile = *tile_path.tile_path.last().unwrap();
+			let target = tile_to_pixel(target_tile);
+			if target.x > position.pos.x
+			{
+                can_move.moving = true;
+				position.pos.x += 1;
+                position.dir = 0;
+			}
+			if target.y > position.pos.y
+			{
+                can_move.moving = true;
+				position.pos.y += 1;
+                position.dir = 1;
+			}
+			if target.x < position.pos.x
+			{
+                can_move.moving = true;
+				position.pos.x -= 1;
+                position.dir = 2;
+			}
+			if target.y < position.pos.y
+			{
+                can_move.moving = true;
+				position.pos.y -= 1;
+                position.dir = 3;
+			}
+			if target == position.pos
+			{
+				tile_path.tile_path.pop().unwrap();
+			}
+		}
 		Ok(None)
 	}
 
@@ -145,29 +253,60 @@ impl Map
 
 	fn draw(&mut self, state: &game_state::GameState) -> Result<()>
 	{
-		state.core.clear_to_color(Color::from_rgb_f(0.05, 0.05, 0.1));
+		state
+			.core
+			.clear_to_color(Color::from_rgb_f(0.05, 0.05, 0.1));
 		let terrain_sprite = state.get_sprite("data/terrain.cfg").unwrap();
 
-        let mut rng = StdRng::seed_from_u64(0);
+		let mut rng = StdRng::seed_from_u64(0);
 		state.core.hold_bitmap_drawing(true);
-		for y in 0..self.size - 1
+		for y in 0..self.size as i32 - 1
 		{
-			for x in 0..self.size - 1
+			for x in 0..self.size as i32 - 1
 			{
-				let t1 = self.terrain[xy_to_idx(x, y, self.size)] as i32;
-				let t2 = self.terrain[xy_to_idx(x + 1, y, self.size)] as i32;
-				let t3 = self.terrain[xy_to_idx(x, y + 1, self.size)] as i32;
-				let t4 = self.terrain[xy_to_idx(x + 1, y + 1, self.size)] as i32;
+				let t1 = self.terrain[tile_to_idx(Point2::new(x, y), self.size).unwrap()] as i32;
+				let t2 =
+					self.terrain[tile_to_idx(Point2::new(x + 1, y), self.size).unwrap()] as i32;
+				let t3 =
+					self.terrain[tile_to_idx(Point2::new(x, y + 1), self.size).unwrap()] as i32;
+				let t4 =
+					self.terrain[tile_to_idx(Point2::new(x + 1, y + 1), self.size).unwrap()] as i32;
 
 				let tile = decode_tile([t1, t2, t3, t4], &mut rng);
 				terrain_sprite.draw(
-					Point2::new((x * TILE_WIDTH) as f32, (y * TILE_WIDTH) as f32),
+					Point2::new((x * TILE_SIZE) as f32, (y * TILE_SIZE) as f32),
 					tile,
 					Color::from_rgb_f(1., 1., 1.),
 					state,
 				);
 			}
 		}
+
+		for (_, (position, can_move, agent_draw)) in self
+			.world
+			.query::<(&comps::Position, &comps::CanMove, &comps::AgentDraw)>()
+			.iter()
+		{
+			let sprite = state.get_sprite(&agent_draw.sprite).unwrap();
+
+            let variant = if can_move.moving
+            {
+                let offt = [0, 4, 0, 8][(state.tick / 5) as usize % 4];
+                position.dir + offt
+            }
+            else
+            {
+				position.dir
+            };
+
+			sprite.draw(
+				to_f32(position.pos),
+                variant,
+				Color::from_rgb_f(1., 1., 1.),
+				state,
+			);
+		}
+
 		state.core.hold_bitmap_drawing(false);
 		Ok(())
 	}

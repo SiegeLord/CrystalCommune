@@ -2,8 +2,9 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
+mod astar;
 mod atlas;
-//mod components;
+mod components;
 mod controls;
 mod error;
 mod game;
