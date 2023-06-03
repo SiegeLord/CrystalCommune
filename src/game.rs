@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{astar, components as comps, game_state, sprite};
+use crate::{astar, components as comps, game_state, sprite, utils};
 use allegro::*;
 use na::{
 	Isometry3, Matrix4, Perspective3, Point2, Point3, Quaternion, RealField, Rotation2, Rotation3,
@@ -7,6 +7,8 @@ use na::{
 };
 use nalgebra as na;
 use rand::prelude::*;
+
+use std::collections::HashMap;
 
 static TILE_SIZE: i32 = 16;
 
@@ -106,6 +108,11 @@ fn tile_to_pixel(tile_pos: Point2<i32>) -> Point2<i32>
 	tile_pos * TILE_SIZE
 }
 
+fn pixel_to_tile(pixel_pos: Point2<i32>) -> Point2<i32>
+{
+	Point2::new(pixel_pos.x / TILE_SIZE, pixel_pos.y / TILE_SIZE)
+}
+
 fn to_f32(pos: Point2<i32>) -> Point2<f32>
 {
 	Point2::new(pos.x as f32, pos.y as f32)
@@ -125,10 +132,44 @@ pub fn spawn_agent<T: Rng>(
 		},
 		comps::AgentDraw {
 			sprite: "data/cat1.cfg".to_string(),
+			visible: true,
 		},
-        comps::CanMove { moving: false }
+		comps::CanMove { moving: false },
+		comps::Agent {
+			time_to_think: 0.,
+			time_to_work: 0.,
+			cur_provider: None,
+            house: None,
+		},
 	));
+	Ok(entity)
+}
 
+pub fn spawn_provider(
+	tile_pos: Point2<i32>, kind: comps::ProviderKind, world: &mut hecs::World,
+	state: &mut game_state::GameState,
+) -> Result<hecs::Entity>
+{
+	let sprite = match kind
+	{
+		comps::ProviderKind::EmptyHouse => "data/crystal1.cfg",
+		comps::ProviderKind::TakenHouse(_) => "data/crystal1.cfg",
+		comps::ProviderKind::Work => "data/crystal2.cfg",
+	};
+	let entity = world.spawn((
+		comps::Position {
+			pos: tile_to_pixel(tile_pos),
+			dir: 0,
+		},
+		comps::SceneryDraw {
+			sprite: sprite.to_string(),
+		},
+		comps::Provider {
+			kind: kind,
+			num_occupants: 0,
+			max_occupants: 1,
+		},
+	));
 	Ok(entity)
 }
 
@@ -150,6 +191,7 @@ struct Map
 	size: usize,
 	terrain: Vec<bool>,
 	world: hecs::World,
+	rng: StdRng,
 }
 
 impl Map
@@ -162,6 +204,8 @@ impl Map
 
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/cat1.cfg")?;
+		state.cache_sprite("data/crystal1.cfg")?;
+		state.cache_sprite("data/crystal2.cfg")?;
 
 		for y in 0..size
 		{
@@ -173,73 +217,249 @@ impl Map
 				}
 				else
 				{
-					rng.gen_bool(0.7)
+					true
 				};
 				terrain.push(val)
 			}
 		}
-        let from = Point2::new(1, 1);
-        terrain[tile_to_idx(from, size).unwrap()] = true;
-
 		let mut world = hecs::World::new();
+		let from = Point2::new(0, 0);
+		//terrain[tile_to_idx(from, size).unwrap()] = true;
 		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
-		{
-			let mut tile_path = world.get::<&mut comps::TilePath>(agent).unwrap();
-            tile_path.tile_path = get_tile_path(from, Point2::new(8, 8), size, &terrain);
-            println!("Here {:?}", tile_path.tile_path);
-		}
+		let from = Point2::new(9, 0);
+		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
+
+		spawn_provider(
+			Point2::new(7, 7),
+			comps::ProviderKind::EmptyHouse,
+			&mut world,
+			state,
+		)?;
+		spawn_provider(
+			Point2::new(6, 2),
+			comps::ProviderKind::EmptyHouse,
+			&mut world,
+			state,
+		)?;
+		spawn_provider(
+			Point2::new(2, 6),
+			comps::ProviderKind::Work,
+			&mut world,
+			state,
+		)?;
+		spawn_provider(
+			Point2::new(4, 5),
+			comps::ProviderKind::Work,
+			&mut world,
+			state,
+		)?;
 
 		Ok(Self {
 			size: size,
 			terrain: terrain,
 			world: world,
+			rng: rng,
 		})
 	}
 
 	fn logic(&mut self, state: &mut game_state::GameState)
 		-> Result<Option<game_state::NextScreen>>
 	{
-		for (_, (position, can_move, tile_path)) in self
+		// TilePath
+		for (id, (position, can_move, tile_path)) in self
 			.world
-			.query::<(&mut comps::Position, &mut comps::CanMove, &mut comps::TilePath)>()
+			.query::<(
+				&mut comps::Position,
+				&mut comps::CanMove,
+				&mut comps::TilePath,
+			)>()
 			.iter()
 		{
 			if tile_path.tile_path.is_empty()
 			{
-                can_move.moving = false;
+				can_move.moving = false;
 				continue;
 			}
+			can_move.moving = true;
 
 			let target_tile = *tile_path.tile_path.last().unwrap();
 			let target = tile_to_pixel(target_tile);
 			if target.x > position.pos.x
 			{
-                can_move.moving = true;
 				position.pos.x += 1;
-                position.dir = 0;
+				position.dir = 0;
 			}
 			if target.y > position.pos.y
 			{
-                can_move.moving = true;
 				position.pos.y += 1;
-                position.dir = 1;
+				position.dir = 1;
 			}
 			if target.x < position.pos.x
 			{
-                can_move.moving = true;
 				position.pos.x -= 1;
-                position.dir = 2;
+				position.dir = 2;
 			}
 			if target.y < position.pos.y
 			{
-                can_move.moving = true;
 				position.pos.y -= 1;
-                position.dir = 3;
+				position.dir = 3;
 			}
 			if target == position.pos
 			{
 				tile_path.tile_path.pop().unwrap();
 			}
+		}
+
+		// Index the providers.
+		let mut kind_to_providers = HashMap::new();
+		for (id, (position, provider)) in self
+			.world
+			.query::<(&comps::Position, &comps::Provider)>()
+			.iter()
+		{
+			if provider.num_occupants == provider.max_occupants
+			{
+				continue;
+			}
+			let mut providers = kind_to_providers
+				.entry(provider.kind)
+				.or_insert_with(Vec::new);
+			providers.push((id, pixel_to_tile(position.pos)));
+		}
+
+		// Agent.
+		let mut providers_to_change = vec![];
+		let mut providers_to_work = vec![];
+		let mut providers_to_house_claim = vec![];
+		for (agent_id, (position, tile_path, can_move, agent)) in self
+			.world
+			.query::<(
+				&comps::Position,
+				&mut comps::TilePath,
+				&mut comps::CanMove,
+				&mut comps::Agent,
+			)>()
+			.iter()
+		{
+			if can_move.moving
+			{
+				continue;
+			}
+			if state.time() < agent.time_to_think
+			{
+				if state.time() > agent.time_to_work
+				{
+					if let Some(provider) = agent.cur_provider
+					{
+						providers_to_work.push(provider);
+					}
+					agent.time_to_work = state.time() + 1.;
+				}
+				continue;
+			}
+			agent.time_to_think = state.time() + 5. + self.rng.gen::<f64>();
+
+			if let Some(provider) = agent.cur_provider.take()
+			{
+				providers_to_change.push((provider, -1));
+			}
+
+			let action = [0, 1, 2].choose(&mut self.rng).unwrap();
+
+			match action
+			{
+				0 =>
+				// Goof off
+				{
+					let cur_pos = pixel_to_tile(position.pos);
+					let mut target = cur_pos
+						+ Vector2::new(self.rng.gen_range(-3..=3), self.rng.gen_range(-3..=3));
+					target.x = utils::clamp(target.x, 0, self.size as i32 - 1);
+					target.y = utils::clamp(target.y, 0, self.size as i32 - 1);
+					let cand_tile_path = get_tile_path(cur_pos, target, self.size, &self.terrain);
+					tile_path.tile_path = cand_tile_path;
+					can_move.moving = true;
+
+					println!("Action:  Goof off");
+				}
+				_ =>
+				{
+					let mut work_options = vec![comps::ProviderKind::Work];
+					if agent.house.is_none()
+					{
+						work_options.push(comps::ProviderKind::EmptyHouse);
+					}
+					else
+					{
+						work_options.push(comps::ProviderKind::TakenHouse(agent_id));
+					}
+					let kind = work_options.choose(&mut self.rng).unwrap();
+					println!("Action: {kind:?}");
+					if let Some(providers) = kind_to_providers.get(kind)
+					{
+						let mut provider_and_scores = Vec::with_capacity(providers.len());
+						let mut total_score = 0.;
+						for (provider_id, provider_pos) in providers
+						{
+							let dist = (to_f32(*provider_pos) - to_f32(position.pos)).magnitude();
+							let score = 1. / (1. + dist);
+							total_score += score;
+							provider_and_scores.push(((*provider_id, *provider_pos), score));
+						}
+						for provider_and_score in &mut provider_and_scores
+						{
+							provider_and_score.1 += 0.1 * total_score * self.rng.gen::<f32>();
+						}
+						// Descending sort.
+						provider_and_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+						for ((provider_id, provider_pos), _) in &provider_and_scores
+						{
+							let cand_tile_path = get_tile_path(
+								pixel_to_tile(position.pos),
+								*provider_pos,
+								self.size,
+								&self.terrain,
+							);
+							if !cand_tile_path.is_empty()
+							{
+								tile_path.tile_path = cand_tile_path;
+								can_move.moving = true;
+								providers_to_change.push((*provider_id, 1));
+								agent.cur_provider = Some(*provider_id);
+								if *kind == comps::ProviderKind::EmptyHouse
+								{
+									agent.house = Some(*provider_id);
+									providers_to_house_claim.push((*provider_id, agent_id));
+								}
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+		for (provider_id, agent_id) in providers_to_house_claim
+		{
+			let mut provider = self.world.get::<&mut comps::Provider>(provider_id).unwrap();
+			provider.kind = comps::ProviderKind::TakenHouse(agent_id);
+		}
+		for provider_id in providers_to_work
+		{
+			println!("Work!");
+		}
+		for (provider_id, change) in providers_to_change
+		{
+			let mut provider = self.world.get::<&mut comps::Provider>(provider_id).unwrap();
+			provider.num_occupants += change;
+		}
+
+		// Agent -> AgentDraw correspondence
+		for (_, (agent, agent_draw, can_move)) in self
+			.world
+			.query::<(&comps::Agent, &mut comps::AgentDraw, &comps::CanMove)>()
+			.iter()
+		{
+			agent_draw.visible = can_move.moving || agent.cur_provider.is_none();
 		}
 		Ok(None)
 	}
@@ -282,31 +502,55 @@ impl Map
 			}
 		}
 
+		for (_, (position, scenery_draw)) in self
+			.world
+			.query::<(&comps::Position, &comps::SceneryDraw)>()
+			.iter()
+		{
+			let sprite = state.get_sprite(&scenery_draw.sprite).unwrap();
+
+			sprite.draw(
+				to_f32(position.pos),
+				0,
+				Color::from_rgb_f(1., 1., 1.),
+				state,
+			);
+		}
 		for (_, (position, can_move, agent_draw)) in self
 			.world
 			.query::<(&comps::Position, &comps::CanMove, &comps::AgentDraw)>()
 			.iter()
 		{
+			if !agent_draw.visible
+			{
+				continue;
+			}
 			let sprite = state.get_sprite(&agent_draw.sprite).unwrap();
 
-            let variant = if can_move.moving
-            {
-                let offt = [0, 4, 0, 8][(state.tick / 5) as usize % 4];
-                position.dir + offt
-            }
-            else
-            {
+			let variant = if can_move.moving
+			{
+				let offt = [0, 4, 0, 8][(state.tick / 5) as usize % 4];
+				position.dir + offt
+			}
+			else
+			{
 				position.dir
-            };
+			};
 
 			sprite.draw(
 				to_f32(position.pos),
-                variant,
-				Color::from_rgb_f(1., 1., 1.),
+				variant,
+				if agent_draw.visible
+				{
+					Color::from_rgb_f(1., 1., 1.)
+				}
+				else
+				{
+					Color::from_rgb_f(0.5, 0.5, 1.)
+				},
 				state,
 			);
 		}
-
 		state.core.hold_bitmap_drawing(false);
 		Ok(())
 	}
