@@ -42,6 +42,8 @@ pub enum ProviderKind
 	EmptyHouse,
 	Office,
 	Port,
+    Plot3x2,
+    Plot3x3,
 }
 
 impl ProviderKind
@@ -54,6 +56,8 @@ impl ProviderKind
 			ProviderKind::EmptyHouse => (3, 2),
 			ProviderKind::Office => (3, 3),
 			ProviderKind::Port => (3, 3),
+            ProviderKind::Plot3x2 => (3, 2),
+            ProviderKind::Plot3x3 => (3, 3),
 		}
 	}
 
@@ -65,6 +69,8 @@ impl ProviderKind
 			ProviderKind::EmptyHouse => 1,
 			ProviderKind::Office => 3,
 			ProviderKind::Port => 5,
+            ProviderKind::Plot3x2 => 2,
+            ProviderKind::Plot3x3 => 2,
 		}
 	}
 
@@ -76,6 +82,8 @@ impl ProviderKind
 			ProviderKind::TakenHouse(_) => "data/house1.cfg",
 			ProviderKind::Office => "data/office1.cfg",
 			ProviderKind::Port => "data/port.cfg",
+            ProviderKind::Plot3x2 => "data/plot_3x2.cfg",
+            ProviderKind::Plot3x3 => "data/plot_3x3.cfg",
 		}
 	}
 }
@@ -86,6 +94,13 @@ pub struct Provider
 	pub kind: ProviderKind,
 	pub num_occupants: i32,
 	pub max_occupants: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Plot
+{
+    pub kind: ProviderKind,
+    pub work_left: i32,
 }
 
 #[derive(Debug, Clone)]

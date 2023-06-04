@@ -119,7 +119,8 @@ fn to_f32(pos: Point2<i32>) -> Point2<f32>
 }
 
 pub fn spawn_agent<T: Rng>(
-	tile_pos: Point2<i32>, world: &mut hecs::World, state: &mut game_state::GameState, rng: &mut T,
+	tile_pos: Point2<i32>, world: &mut hecs::World, _state: &mut game_state::GameState,
+	_rng: &mut T,
 ) -> Result<hecs::Entity>
 {
 	let entity = world.spawn((
@@ -148,10 +149,19 @@ pub fn spawn_agent<T: Rng>(
 }
 
 pub fn spawn_provider(
-	tile_pos: Point2<i32>, kind: comps::ProviderKind, world: &mut hecs::World,
-	state: &mut game_state::GameState,
+	tile_pos: Point2<i32>, mut kind: comps::ProviderKind, world: &mut hecs::World,
+	_state: &mut game_state::GameState,
 ) -> Result<hecs::Entity>
 {
+	let size = kind.get_size();
+	let real_kind = kind;
+	match size
+	{
+		(3, 2) => kind = comps::ProviderKind::Plot3x2,
+		(3, 3) => kind = comps::ProviderKind::Plot3x3,
+		_ => panic!("Unknown plot size: {:?}", size),
+	}
+
 	let entity = world.spawn((
 		comps::Position {
 			pos: tile_to_pixel(tile_pos),
@@ -164,6 +174,10 @@ pub fn spawn_provider(
 			kind: kind,
 			num_occupants: 0,
 			max_occupants: kind.get_max_occupants(),
+		},
+		comps::Plot {
+			kind: real_kind,
+			work_left: 2,
 		},
 	));
 	Ok(entity)
@@ -218,7 +232,7 @@ fn get_tile_path(
 		from,
 		to,
 		|pos| tile_to_idx(pos, size).map_or(true, |idx| !walkable[idx]),
-		|pos| 1.,
+		|_| 1.,
 	);
 	if !path.is_empty() && path[0] != to && !allow_partial
 	{
@@ -248,6 +262,7 @@ struct Map
 	port: Option<hecs::Entity>,
 	blimp: Option<hecs::Entity>,
 	cursor_kind: CursorKind,
+	camera_pos: Vector2<i32>,
 }
 
 impl Map
@@ -258,6 +273,9 @@ impl Map
 		let mut terrain = Vec::with_capacity(size * size);
 		let mut rng = StdRng::seed_from_u64(0);
 
+		state.cache_sprite("data/plot_3x2.cfg")?;
+		state.cache_sprite("data/plot_3x3.cfg")?;
+		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/cat1.cfg")?;
 		state.cache_sprite("data/crystal1.cfg")?;
@@ -288,9 +306,9 @@ impl Map
 		let mut world = hecs::World::new();
 		let from = Point2::new(1, 1);
 		//terrain[tile_to_idx(from, size).unwrap()] = true;
-		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
+		spawn_agent(from, &mut world, state, &mut rng)?;
 		let from = Point2::new(9, 1);
-		let agent = spawn_agent(from, &mut world, state, &mut rng)?;
+		spawn_agent(from, &mut world, state, &mut rng)?;
 
 		//spawn_provider(
 		//	Point2::new(7, 7),
@@ -326,6 +344,7 @@ impl Map
 			port: None,
 			blimp: None,
 			cursor_kind: CursorKind::Normal,
+			camera_pos: Vector2::new(0, 0),
 		})
 	}
 
@@ -379,10 +398,38 @@ impl Map
 			self.cursor_kind = new_cursor;
 		}
 
+		// Camera.
+		if self.mouse_pos.x <= 0
+		{
+			self.camera_pos.x -= state.options.camera_speed;
+		}
+		if self.mouse_pos.x + 1 >= state.buffer_width as i32
+		{
+			self.camera_pos.x += state.options.camera_speed;
+		}
+		if self.mouse_pos.y <= 0
+		{
+			self.camera_pos.y -= state.options.camera_speed;
+		}
+		if self.mouse_pos.y + 1 >= state.buffer_height as i32
+		{
+			self.camera_pos.y += state.options.camera_speed;
+		}
+		self.camera_pos.x = utils::clamp(
+			self.camera_pos.x,
+			0,
+			self.size as i32 * TILE_SIZE - state.buffer_width as i32,
+		);
+		self.camera_pos.y = utils::clamp(
+			self.camera_pos.y,
+			0,
+			self.size as i32 * TILE_SIZE - state.buffer_height as i32,
+		);
+
 		// Maps.
 		let mut buildable = self.terrain.clone();
 		let mut walkable = self.terrain.clone();
-		let mut flyable = vec![true; buildable.len()];
+		let flyable = vec![true; buildable.len()];
 		for (_, (position, provider)) in self
 			.world
 			.query::<(&comps::Position, &comps::Provider)>()
@@ -428,8 +475,9 @@ impl Map
 						building_placement,
 					)
 					.unwrap();
-				let tile_pos =
-					pixel_to_tile(self.mouse_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2);
+				let tile_pos = pixel_to_tile(
+					self.mouse_pos + self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
+				);
 				let start_x = tile_pos.x - building_placement.width / 2;
 				let start_y = tile_pos.y - building_placement.height + 1;
 				for y in 0..building_placement.height
@@ -448,6 +496,7 @@ impl Map
 		}
 
 		// TilePath
+		let mut stuck = vec![];
 		for (id, (position, can_move, tile_path)) in self
 			.world
 			.query::<(
@@ -465,6 +514,13 @@ impl Map
 			can_move.moving = true;
 
 			let target_tile = *tile_path.tile_path.last().unwrap();
+			if !walkable[tile_to_idx(target_tile, self.size).unwrap()]
+			{
+				can_move.moving = false;
+				tile_path.tile_path.clear();
+				stuck.push(id);
+				continue;
+			}
 			let target = tile_to_pixel(target_tile);
 			if target.x > position.pos.x
 			{
@@ -491,9 +547,18 @@ impl Map
 				tile_path.tile_path.pop().unwrap();
 			}
 		}
+		for id in stuck
+		{
+			if let Ok(agent) = self.world.query_one_mut::<&mut comps::Agent>(id)
+			{
+				println!("Stuck: {:?}", id);
+				agent.cur_provider = None;
+			}
+		}
 
 		// Index the providers.
 		let mut kind_to_providers = HashMap::new();
+		let mut provider_to_slots = HashMap::new();
 		for (id, (position, provider)) in self
 			.world
 			.query::<(&comps::Position, &comps::Provider)>()
@@ -503,7 +568,8 @@ impl Map
 			{
 				continue;
 			}
-			let mut providers = kind_to_providers
+			provider_to_slots.insert(id, provider.max_occupants - provider.num_occupants);
+			let providers = kind_to_providers
 				.entry(provider.kind)
 				.or_insert_with(Vec::new);
 			providers.push((id, pixel_to_tile(position.pos)));
@@ -560,24 +626,24 @@ impl Map
 					agent.house = None;
 				}
 			}
-            if agent.leaving && self.port.is_none()
-            {
-                agent.leaving = false;
-            }
+			if agent.leaving && self.port.is_none()
+			{
+				agent.leaving = false;
+			}
 			if can_move.moving || agent.leaving
 			{
 				continue;
 			}
+			if state.time() > agent.time_to_work
+			{
+				if let Some(provider) = agent.cur_provider
+				{
+					providers_to_work.push(provider);
+				}
+				agent.time_to_work = state.time() + 1.;
+			}
 			if state.time() < agent.time_to_think
 			{
-				if state.time() > agent.time_to_work
-				{
-					if let Some(provider) = agent.cur_provider
-					{
-						providers_to_work.push(provider);
-					}
-					agent.time_to_work = state.time() + 1.;
-				}
 				continue;
 			}
 			agent.time_to_think = state.time() + 5. + self.rng.gen::<f64>();
@@ -587,88 +653,103 @@ impl Map
 				providers_to_change.push((provider, -1));
 			}
 
-			let action = [0, 1, 2].choose(&mut self.rng).unwrap();
-
-			match action
+			let mut actions = vec![None];
+			if agent.house.is_some()
 			{
-				0 =>
-				// Goof off
-				{
-					let cur_pos = pixel_to_tile(position.pos);
-					let mut target = cur_pos
-						+ Vector2::new(self.rng.gen_range(-3..=3), self.rng.gen_range(-3..=3));
-					target.x = utils::clamp(target.x, 0, self.size as i32 - 1);
-					target.y = utils::clamp(target.y, 0, self.size as i32 - 1);
-					let cand_tile_path = get_tile_path(cur_pos, target, self.size, &walkable, true);
-					tile_path.tile_path = cand_tile_path;
-					can_move.moving = true;
+				actions.push(Some(comps::ProviderKind::TakenHouse(agent_id)));
+			}
+			else
+			{
+				actions.push(Some(comps::ProviderKind::EmptyHouse));
+			}
 
-					println!("Action:  Goof off");
-				}
-				_ =>
+			for kind in [
+				comps::ProviderKind::Office,
+				comps::ProviderKind::Port,
+				comps::ProviderKind::Plot3x2,
+				comps::ProviderKind::Plot3x3,
+			]
+			{
+				if kind_to_providers.contains_key(&kind)
 				{
-					let mut work_options =
-						vec![comps::ProviderKind::Office, comps::ProviderKind::Port];
-					if agent.house.is_none()
+					actions.push(Some(kind));
+				}
+			}
+
+			let action = actions.choose(&mut self.rng).unwrap();
+			println!("{agent_id:?}: {action:?}");
+
+			if let Some(kind) = action
+			{
+				if let Some(providers) = kind_to_providers.get(kind)
+				{
+					let mut provider_and_scores = Vec::with_capacity(providers.len());
+					let mut total_score = 0.;
+					for (provider_id, provider_pos) in providers
 					{
-						work_options.push(comps::ProviderKind::EmptyHouse);
-					}
-					else
-					{
-						work_options.push(comps::ProviderKind::TakenHouse(agent_id));
-					}
-					let kind = work_options.choose(&mut self.rng).unwrap();
-					println!("Action: {kind:?}");
-					if let Some(providers) = kind_to_providers.get(kind)
-					{
-						let mut provider_and_scores = Vec::with_capacity(providers.len());
-						let mut total_score = 0.;
-						for (provider_id, provider_pos) in providers
+						let dist = (to_f32(*provider_pos) - to_f32(position.pos)).magnitude();
+						let score = 1. / (1. + dist);
+						total_score += score;
+						if provider_to_slots[provider_id] <= 0
 						{
-							let dist = (to_f32(*provider_pos) - to_f32(position.pos)).magnitude();
-							let score = 1. / (1. + dist);
-							total_score += score;
-							provider_and_scores.push(((*provider_id, *provider_pos), score));
+							continue;
 						}
-						for provider_and_score in &mut provider_and_scores
+						provider_and_scores.push(((*provider_id, *provider_pos), score));
+					}
+					for provider_and_score in &mut provider_and_scores
+					{
+						provider_and_score.1 += 0.1 * total_score * self.rng.gen::<f32>();
+					}
+					// Descending sort.
+					provider_and_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+					for ((provider_id, provider_pos), _) in &provider_and_scores
+					{
+						let cand_tile_path = get_tile_path(
+							pixel_to_tile(position.pos),
+							*provider_pos,
+							self.size,
+							&walkable,
+							false,
+						);
+						if !cand_tile_path.is_empty()
 						{
-							provider_and_score.1 += 0.1 * total_score * self.rng.gen::<f32>();
-						}
-						// Descending sort.
-						provider_and_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-						for ((provider_id, provider_pos), _) in &provider_and_scores
-						{
-							let cand_tile_path = get_tile_path(
-								pixel_to_tile(position.pos),
-								*provider_pos,
-								self.size,
-								&walkable,
-								false,
-							);
-							if !cand_tile_path.is_empty()
+							tile_path.tile_path = cand_tile_path;
+							can_move.moving = true;
+							providers_to_change.push((*provider_id, 1));
+							*provider_to_slots.get_mut(&provider_id).unwrap() -= 1;
+							agent.cur_provider = Some(*provider_id);
+							match *kind
 							{
-								tile_path.tile_path = cand_tile_path;
-								can_move.moving = true;
-								providers_to_change.push((*provider_id, 1));
-								agent.cur_provider = Some(*provider_id);
-								match *kind
+								comps::ProviderKind::EmptyHouse =>
 								{
-									comps::ProviderKind::EmptyHouse =>
-									{
-										agent.house = Some(*provider_id);
-										providers_to_house_claim.push((*provider_id, agent_id));
-									}
-									comps::ProviderKind::Port =>
-									{
-										agent.leaving = true;
-									}
-									_ => (),
+									agent.house = Some(*provider_id);
+									providers_to_house_claim.push((*provider_id, agent_id));
 								}
-								break;
+								comps::ProviderKind::Port =>
+								{
+									agent.leaving = true;
+								}
+								_ => (),
 							}
+							break;
 						}
 					}
 				}
+				if !can_move.moving
+				{
+					println!("Failed to act!");
+				}
+			}
+			else
+			{
+				let cur_pos = pixel_to_tile(position.pos);
+				let mut target =
+					cur_pos + Vector2::new(self.rng.gen_range(-3..=3), self.rng.gen_range(-3..=3));
+				target.x = utils::clamp(target.x, 0, self.size as i32 - 1);
+				target.y = utils::clamp(target.y, 0, self.size as i32 - 1);
+				let cand_tile_path = get_tile_path(cur_pos, target, self.size, &walkable, true);
+				tile_path.tile_path = cand_tile_path;
+				can_move.moving = true;
 			}
 		}
 		for (provider_id, agent_id) in providers_to_house_claim
@@ -682,6 +763,30 @@ impl Map
 		}
 		for provider_id in providers_to_work
 		{
+			let mut plot_complete = None;
+			if let Ok(plot) = self.world.query_one_mut::<&mut comps::Plot>(provider_id)
+			{
+				plot.work_left -= 1;
+				if plot.work_left <= 0
+				{
+					plot_complete = Some(plot.kind);
+				}
+			}
+			if let Some(kind) = plot_complete
+			{
+				let (provider, scenery_draw) = self
+					.world
+					.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(provider_id)
+					.unwrap();
+				provider.kind = kind;
+				if kind == comps::ProviderKind::Port
+				{
+					self.port = Some(provider_id);
+				}
+				scenery_draw.sprite = kind.get_sprite().to_string();
+				self.world.remove_one::<comps::Plot>(provider_id)?;
+			}
+
 			println!("Work unit!");
 		}
 		for (provider_id, change) in providers_to_change
@@ -771,12 +876,13 @@ impl Map
 		{
 			if let Some(port_pos) = port_pos
 			{
-				for _ in 0..2
-				{
-					spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
-				}
+				//for _ in 0..2
+				//{
+				//	spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
+				//}
 			}
 		}
+		let mut houses_to_free = vec![];
 		if collect_agents
 		{
 			for (agent_id, (can_move, agent)) in self
@@ -786,9 +892,22 @@ impl Map
 			{
 				if !can_move.moving && agent.leaving
 				{
+					if let Some(house_id) = agent.house
+					{
+						houses_to_free.push(house_id);
+					}
 					to_die.push(agent_id);
 				}
 			}
+		}
+		for house_id in houses_to_free
+		{
+			let (provider, scenery_draw) = self
+				.world
+				.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(house_id)
+				.unwrap();
+			provider.kind = comps::ProviderKind::EmptyHouse;
+			scenery_draw.sprite = provider.kind.get_sprite().to_string();
 		}
 
 		// Remove dead entities
@@ -854,7 +973,8 @@ impl Map
 						CursorKind::Destroy =>
 						{
 							let tile_pos = pixel_to_tile(
-								self.mouse_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
+								self.mouse_pos
+									+ self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
 							);
 							let mut to_die = None;
 							for (id, (position, provider)) in self
@@ -883,11 +1003,7 @@ impl Map
 					}
 					if let Some((position, kind)) = spawn
 					{
-						let provider = spawn_provider(position, kind, &mut self.world, state)?;
-						if kind == comps::ProviderKind::Port
-						{
-							self.port = Some(provider);
-						}
+						spawn_provider(position, kind, &mut self.world, state)?;
 					}
 				}
 			}
@@ -919,7 +1035,7 @@ impl Map
 
 				let tile = decode_tile([t1, t2, t3, t4], &mut rng);
 				terrain_sprite.draw(
-					Point2::new((x * TILE_SIZE) as f32, (y * TILE_SIZE) as f32),
+					to_f32(tile_to_pixel(Point2::new(x, y)) - self.camera_pos),
 					tile,
 					Color::from_rgb_f(1., 1., 1.),
 					state,
@@ -935,7 +1051,7 @@ impl Map
 			let sprite = state.get_sprite(&scenery_draw.sprite).unwrap();
 
 			sprite.draw(
-				to_f32(position.pos),
+				to_f32(position.pos - self.camera_pos),
 				0,
 				Color::from_rgb_f(1., 1., 1.),
 				state,
@@ -963,7 +1079,7 @@ impl Map
 			};
 
 			sprite.draw(
-				to_f32(position.pos),
+				to_f32(position.pos - self.camera_pos),
 				variant,
 				if agent_draw.visible
 				{
@@ -982,7 +1098,7 @@ impl Map
 			let position = self.world.query_one_mut::<&comps::Position>(blimp).unwrap();
 			let sprite = state.get_sprite("data/blimp.cfg").unwrap();
 			sprite.draw(
-				to_f32(position.pos),
+				to_f32(position.pos - self.camera_pos),
 				0,
 				Color::from_rgb_f(1., 1., 1.),
 				state,
@@ -1009,7 +1125,7 @@ impl Map
 					{
 						let pos = tile_to_pixel(Point2::new(start_x + x, start_y + y));
 						sprite.draw(
-							to_f32(pos),
+							to_f32(pos - self.camera_pos),
 							(!building_placement.valid[(x + y * building_placement.width) as usize])
 								as i32,
 							Color::from_rgb_f(1., 1., 1.),

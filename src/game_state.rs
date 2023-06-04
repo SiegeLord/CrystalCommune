@@ -20,6 +20,7 @@ pub struct Options
 	pub vsync_method: i32,
 	pub sfx_volume: f32,
 	pub music_volume: f32,
+    pub camera_speed: i32,
 
 	pub controls: controls::Controls,
 }
@@ -36,6 +37,7 @@ impl Default for Options
 			vsync_method: 2,
 			sfx_volume: 1.,
 			music_volume: 1.,
+            camera_speed: 4,
 			controls: controls::Controls::new(),
 		}
 	}

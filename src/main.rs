@@ -50,7 +50,7 @@ fn real_main() -> Result<()>
 			DisplayOptionImportance::Suggest,
 		);
 	}
-	let mut display = Display::new(&state.core, state.options.width, state.options.height)
+	let display = Display::new(&state.core, state.options.width, state.options.height)
 		.map_err(|_| "Couldn't create display".to_string())?;
 
 	let buffer_width = 160;
@@ -101,6 +101,7 @@ fn real_main() -> Result<()>
 	let mut old_fullscreen = state.options.fullscreen;
 	//let mut old_mouse_hide = state.hide_mouse;
 	let mut prev_frame_start = state.core.get_time();
+    state.core.grab_mouse(&display).ok();
 
 	timer.start();
 	while !quit
@@ -199,6 +200,14 @@ fn real_main() -> Result<()>
 					.acknowledge_resize()
 					.map_err(|_| "Couldn't acknowledge resize".to_string())?;
 			}
+            Event::DisplaySwitchIn { .. } =>
+            {
+                state.core.grab_mouse(&display).ok();
+            }
+            Event::DisplaySwitchOut { .. } =>
+            {
+                state.core.ungrab_mouse().ok();
+            }
 			Event::TimerTick { .. } =>
 			{
 				if logics_without_draw > 10
@@ -211,7 +220,7 @@ fn real_main() -> Result<()>
 					next_screen = match &mut cur_screen
 					{
 						Screen::Game(game) => game.logic(&mut state)?,
-						_ => None,
+						//_ => None,
 					}
 				}
 
