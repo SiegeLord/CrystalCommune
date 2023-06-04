@@ -470,7 +470,7 @@ impl Controls
 		let mut action_to_inputs = BTreeMap::new();
 		action_to_inputs.insert(
 			Action::BuildHouse,
-			[Some(Input::Keyboard(allegro::KeyCode::B)), None],
+			[Some(Input::Keyboard(allegro::KeyCode::H)), None],
 		);
 		action_to_inputs.insert(
 			Action::BuildPort,

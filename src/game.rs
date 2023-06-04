@@ -152,20 +152,13 @@ pub fn spawn_provider(
 	state: &mut game_state::GameState,
 ) -> Result<hecs::Entity>
 {
-	let sprite = match kind
-	{
-		comps::ProviderKind::EmptyHouse => "data/house1.cfg",
-		comps::ProviderKind::TakenHouse(_) => "data/house1.cfg",
-		comps::ProviderKind::Office => "data/house1.cfg",
-		comps::ProviderKind::Port => "data/house1.cfg",
-	};
 	let entity = world.spawn((
 		comps::Position {
 			pos: tile_to_pixel(tile_pos),
 			dir: 0,
 		},
 		comps::SceneryDraw {
-			sprite: sprite.to_string(),
+			sprite: kind.get_sprite().to_string(),
 		},
 		comps::Provider {
 			kind: kind,
@@ -269,7 +262,11 @@ impl Map
 		state.cache_sprite("data/cat1.cfg")?;
 		state.cache_sprite("data/crystal1.cfg")?;
 		state.cache_sprite("data/crystal2.cfg")?;
+		state.cache_sprite("data/empty_house1.cfg")?;
 		state.cache_sprite("data/house1.cfg")?;
+		state.cache_sprite("data/office1.cfg")?;
+		state.cache_sprite("data/port.cfg")?;
+		state.cache_sprite("data/blimp.cfg")?;
 		state.cache_sprite("data/building_placement.cfg")?;
 
 		for y in 0..size
@@ -512,6 +509,29 @@ impl Map
 			providers.push((id, pixel_to_tile(position.pos)));
 		}
 
+		// Port
+		let mut port_pos = None;
+		if let Some(port_id) = self.port
+		{
+			if !self.world.contains(port_id)
+			{
+				self.port = None;
+			}
+			else
+			{
+				let port_position = self
+					.world
+					.query_one_mut::<&comps::Position>(port_id)
+					.unwrap()
+					.clone();
+				port_pos = Some(pixel_to_tile(port_position.pos));
+				if self.blimp.is_none()
+				{
+					self.blimp = Some(spawn_blimp(Point2::new(0, 0), &mut self.world)?);
+				}
+			}
+		}
+
 		// Agent.
 		let mut providers_to_change = vec![];
 		let mut providers_to_work = vec![];
@@ -540,6 +560,10 @@ impl Map
 					agent.house = None;
 				}
 			}
+            if agent.leaving && self.port.is_none()
+            {
+                agent.leaving = false;
+            }
 			if can_move.moving || agent.leaving
 			{
 				continue;
@@ -649,8 +673,12 @@ impl Map
 		}
 		for (provider_id, agent_id) in providers_to_house_claim
 		{
-			let mut provider = self.world.get::<&mut comps::Provider>(provider_id).unwrap();
+			let (provider, scenery_draw) = self
+				.world
+				.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(provider_id)
+				.unwrap();
 			provider.kind = comps::ProviderKind::TakenHouse(agent_id);
+			scenery_draw.sprite = provider.kind.get_sprite().to_string();
 		}
 		for provider_id in providers_to_work
 		{
@@ -669,22 +697,6 @@ impl Map
 			.iter()
 		{
 			agent_draw.visible = can_move.moving || agent.cur_provider.is_none();
-		}
-
-		// Port
-		let mut port_pos = None;
-		if let Some(port_id) = self.port
-		{
-			let port_position = self
-				.world
-				.query_one_mut::<&comps::Position>(port_id)
-				.unwrap()
-				.clone();
-			port_pos = Some(pixel_to_tile(port_position.pos));
-			if self.blimp.is_none()
-			{
-				self.blimp = Some(spawn_blimp(Point2::new(0, 0), &mut self.world)?);
-			}
 		}
 
 		// Blimp
@@ -850,9 +862,10 @@ impl Map
 								.query::<(&comps::Position, &comps::Provider)>()
 								.iter()
 							{
+								let provider_tile_pos = pixel_to_tile(position.pos);
 								let (width, height) = provider.kind.get_size();
-								let start_x = tile_pos.x - width / 2;
-								let start_y = tile_pos.y - height + 1;
+								let start_x = provider_tile_pos.x - width / 2;
+								let start_y = provider_tile_pos.y - height + 1;
 								if tile_pos.x >= start_x
 									&& tile_pos.x < start_x + width && tile_pos.y >= start_y
 									&& tile_pos.y < start_y + height
@@ -967,7 +980,7 @@ impl Map
 		if let Some(blimp) = self.blimp
 		{
 			let position = self.world.query_one_mut::<&comps::Position>(blimp).unwrap();
-			let sprite = state.get_sprite("data/house1.cfg").unwrap();
+			let sprite = state.get_sprite("data/blimp.cfg").unwrap();
 			sprite.draw(
 				to_f32(position.pos),
 				0,
