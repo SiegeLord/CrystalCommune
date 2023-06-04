@@ -1,4 +1,5 @@
 use crate::sprite;
+use allegro::*;
 use na::Point2;
 use nalgebra as na;
 
@@ -96,6 +97,19 @@ impl ProviderKind
             ProviderKind::Plot3x3 => "data/plot_3x3.cfg",
 		}
 	}
+
+    pub fn get_cost(&self) -> i32
+    {
+		match self
+		{
+			ProviderKind::TakenHouse(_) => 0,
+			ProviderKind::EmptyHouse => 500,
+			ProviderKind::Office => 1500,
+			ProviderKind::Port => 3000,
+            ProviderKind::Plot3x2 => 0,
+            ProviderKind::Plot3x3 => 0,
+		}
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,13 +118,15 @@ pub struct Provider
 	pub kind: ProviderKind,
 	pub num_occupants: i32,
 	pub max_occupants: i32,
+    pub time_to_maintain: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct Plot
 {
     pub kind: ProviderKind,
-    pub work_left: i32,
+    pub work_done: i32,
+    pub work_total: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -148,4 +164,12 @@ pub struct Blimp
 {
 	pub state: BlimpState,
 	pub time_to_leave: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Indicator
+{
+    pub time_to_die: f64,
+    pub text: String,
+    pub color: Color,
 }

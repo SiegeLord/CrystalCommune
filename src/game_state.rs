@@ -66,7 +66,7 @@ pub struct GameState
 
 	//pub sfx: sfx::Sfx,
 	pub atlas: atlas::Atlas,
-	//pub ui_font: Font,
+	pub ui_font: Font,
 	//pub number_font: Font,
 	pub options: Options,
 	pub draw_scale: f32,
@@ -135,9 +135,7 @@ impl GameState
 
 		//let sfx = sfx::Sfx::new(options.sfx_volume, options.music_volume, &core)?;
 
-		//let ui_font = ttf
-		//	.load_ttf_font("data/MHTIROGLA.ttf", -32, TtfFlags::zero())
-		//	.map_err(|_| "Couldn't load 'data/MHTIROGLA.ttf'".to_string())?;
+        let ui_font = Font::new_builtin(&font).map_err(|_| "Could't create builtin font.".to_string())?;
 		//let number_font = ttf
 		//	.load_ttf_font("data/MHTIROGLA.ttf", -32, TtfFlags::zero())
 		//	.map_err(|_| "Couldn't load 'data/advanced_pixel_lcd-7.ttf'".to_string())?;
@@ -156,7 +154,7 @@ impl GameState
 			//sfx: sfx,
 			paused: false,
 			atlas: atlas::Atlas::new(512),
-			//ui_font: ui_font,
+			ui_font: ui_font,
 			//number_font: number_font,
 			draw_scale: 1.,
 			display_width: 0.,

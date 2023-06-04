@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::{astar, components as comps, controls, game_state, sprite, utils};
 use allegro::*;
+use allegro_font::*;
 use na::{
 	Isometry3, Matrix4, Perspective3, Point2, Point3, Quaternion, RealField, Rotation2, Rotation3,
 	Unit, Vector2, Vector3, Vector4,
@@ -131,6 +132,57 @@ fn get_warp_location<T: Rng>(rng: &mut T, size: usize) -> (i32, i32)
 	.unwrap()
 }
 
+fn get_money_indicator(amount: i32, pos_sign: bool) -> (String, Color)
+{
+	let text = format!(
+		"{}${}",
+		if amount >= 0
+		{
+			if pos_sign
+			{
+				"+"
+			}
+			else
+			{
+				""
+			}
+		}
+		else
+		{
+			"-"
+		},
+		amount.abs()
+	);
+	let color = if amount >= 0
+	{
+		Color::from_rgb(208, 248, 171)
+	}
+	else
+	{
+		Color::from_rgb_f(0.8, 0.2, 0.3)
+	};
+	(text, color)
+}
+
+pub fn spawn_indicator(
+	tile_pos: Point2<i32>, text: String, color: Color, world: &mut hecs::World,
+	state: &mut game_state::GameState,
+) -> Result<hecs::Entity>
+{
+	let entity = world.spawn((
+		comps::Position {
+			pos: tile_to_pixel(tile_pos),
+			dir: 0,
+		},
+		comps::Indicator {
+			text: text,
+			color: color,
+			time_to_die: state.time() + 1.0,
+		},
+	));
+	Ok(entity)
+}
+
 pub fn spawn_agent<T: Rng>(
 	tile_pos: Point2<i32>, world: &mut hecs::World, _state: &mut game_state::GameState,
 	_rng: &mut T,
@@ -166,7 +218,7 @@ pub fn spawn_agent<T: Rng>(
 
 pub fn spawn_provider(
 	tile_pos: Point2<i32>, mut kind: comps::ProviderKind, world: &mut hecs::World,
-	_state: &mut game_state::GameState,
+	state: &mut game_state::GameState,
 ) -> Result<hecs::Entity>
 {
 	let size = kind.get_size();
@@ -190,10 +242,12 @@ pub fn spawn_provider(
 			kind: kind,
 			num_occupants: 0,
 			max_occupants: kind.get_max_occupants(),
+			time_to_maintain: state.time() + 10.,
 		},
 		comps::Plot {
 			kind: real_kind,
-			work_left: 2,
+			work_done: 0,
+			work_total: 2,
 		},
 	));
 	Ok(entity)
@@ -279,6 +333,8 @@ struct Map
 	blimp: Option<hecs::Entity>,
 	cursor_kind: CursorKind,
 	camera_pos: Vector2<i32>,
+	money: i32,
+    population: i32,
 }
 
 impl Map
@@ -362,6 +418,8 @@ impl Map
 			blimp: None,
 			cursor_kind: CursorKind::Normal,
 			camera_pos: Vector2::new(0, 0),
+			money: 10000,
+            population: 0,
 		})
 	}
 
@@ -573,14 +631,30 @@ impl Map
 			}
 		}
 
-		// Index the providers.
+		// Providers.
+		let mut indicators = vec![];
 		let mut kind_to_providers = HashMap::new();
 		let mut provider_to_slots = HashMap::new();
 		for (id, (position, provider)) in self
 			.world
-			.query::<(&comps::Position, &comps::Provider)>()
+			.query::<(&comps::Position, &mut comps::Provider)>()
 			.iter()
 		{
+			if state.time() > provider.time_to_maintain
+			{
+				let maintenance_cost = provider.kind.get_cost() / 10;
+				if provider.kind.get_cost() != 0
+				{
+					let (text, color) = get_money_indicator(-maintenance_cost, true);
+					indicators.push((
+						pixel_to_tile(position.pos) - Vector2::new(0, 1),
+						text,
+						color,
+					));
+				}
+				self.money -= maintenance_cost;
+				provider.time_to_maintain = state.time() + 10.;
+			}
 			if provider.num_occupants == provider.max_occupants
 			{
 				continue;
@@ -620,6 +694,7 @@ impl Map
 		}
 
 		// Agent.
+        self.population = 0;
 		let mut providers_to_change = vec![];
 		let mut providers_to_work = vec![];
 		let mut providers_to_house_claim = vec![];
@@ -634,7 +709,8 @@ impl Map
 			)>()
 			.iter()
 		{
-			agent.hunger += 1;
+			self.population += 1;
+            agent.hunger += 1;
 			agent.sleepyness += 1;
 			agent.hunger = utils::clamp(agent.hunger, 0, MAX_SLEEPYNESS);
 			agent.sleepyness = utils::clamp(agent.sleepyness, 0, MAX_SLEEPYNESS);
@@ -700,7 +776,7 @@ impl Map
 				(comps::ProviderKind::Office, 1.0),
 				(
 					comps::ProviderKind::Port,
-					0.2 * agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
+					10. * (agent.sleepyness as f32 / MAX_SLEEPYNESS as f32).powf(4.),
 				),
 				(comps::ProviderKind::Plot3x2, 2.0),
 				(comps::ProviderKind::Plot3x3, 2.0),
@@ -715,6 +791,7 @@ impl Map
 			let (action, _) = actions
 				.choose_weighted(&mut self.rng, |(_, weight)| *weight)
 				.unwrap();
+            println!("{agent_id:?} {actions:?}");
 			println!(
 				"{agent_id:?}: {action:?} hunger: {} sleepyness: {}",
 				agent.hunger, agent.sleepyness
@@ -809,24 +886,52 @@ impl Map
 		for (provider_id, agent_id) in providers_to_work
 		{
 			let mut plot_complete = None;
-			if let Ok(plot) = self.world.query_one_mut::<&mut comps::Plot>(provider_id)
+			if let Ok((position, plot)) = self
+				.world
+				.query_one_mut::<(&comps::Position, &mut comps::Plot)>(provider_id)
 			{
-				plot.work_left -= 1;
-				if plot.work_left <= 0
+				plot.work_done += 1;
+				indicators.push((
+					pixel_to_tile(position.pos) - Vector2::new(0, 1),
+					format!("{}/{}", plot.work_done, plot.work_total),
+					Color::from_rgb_f(0.9, 0.9, 0.3),
+				));
+				if plot.work_done >= plot.work_total
 				{
 					plot_complete = Some(plot.kind);
 				}
 			}
+
 			let mut hunger_change = 0;
 			let mut sleepyness_change = 0;
+
+			let office_money = 50;
 			{
-				let provider = self
+				let (position, provider) = self
 					.world
-					.query_one_mut::<&mut comps::Provider>(provider_id)
+					.query_one_mut::<(&comps::Position, &mut comps::Provider)>(provider_id)
 					.unwrap();
 				match provider.kind
 				{
-					comps::ProviderKind::TakenHouse(_) => sleepyness_change = -500,
+					comps::ProviderKind::TakenHouse(_) =>
+					{
+						sleepyness_change = -500;
+						indicators.push((
+							pixel_to_tile(position.pos) - Vector2::new(0, 1),
+							"zZz".to_string(),
+							Color::from_rgb_f(0.4, 0.3, 0.9),
+						));
+					}
+					comps::ProviderKind::Office =>
+					{
+						self.money += office_money;
+						let (text, color) = get_money_indicator(office_money, true);
+						indicators.push((
+							pixel_to_tile(position.pos) - Vector2::new(0, 1),
+							text,
+							color,
+						));
+					}
 					_ => hunger_change = 50,
 				}
 			}
@@ -837,6 +942,11 @@ impl Map
 					.unwrap();
 				agent.hunger += hunger_change;
 				agent.sleepyness += sleepyness_change;
+				if plot_complete.is_some()
+				{
+					println!("Finished");
+					agent.cur_provider = None;
+				}
 			}
 			if let Some(kind) = plot_complete
 			{
@@ -845,6 +955,7 @@ impl Map
 					.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(provider_id)
 					.unwrap();
 				provider.kind = kind;
+				provider.num_occupants = 0;
 				if kind == comps::ProviderKind::Port
 				{
 					self.port = Some(provider_id);
@@ -860,6 +971,10 @@ impl Map
 			let mut provider = self.world.get::<&mut comps::Provider>(provider_id).unwrap();
 			provider.num_occupants += change;
 		}
+		for (tile_pos, text, color) in indicators
+		{
+			spawn_indicator(tile_pos, text, color, &mut self.world, state)?;
+		}
 
 		// Agent -> AgentDraw correspondence
 		for (_, (agent, agent_draw, can_move)) in self
@@ -868,6 +983,20 @@ impl Map
 			.iter()
 		{
 			agent_draw.visible = can_move.moving || agent.cur_provider.is_none();
+		}
+
+		// Indicator
+		for (id, (position, indicator)) in self
+			.world
+			.query::<(&mut comps::Position, &comps::Indicator)>()
+			.iter()
+		{
+			if state.time() > indicator.time_to_die
+			{
+				to_die.push(id);
+				continue;
+			}
+			position.pos.y -= 1;
 		}
 
 		// Blimp
@@ -943,13 +1072,19 @@ impl Map
 		{
 			if let Some(port_pos) = port_pos
 			{
-				//for _ in 0..2
-				//{
-				//	spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
-				//}
+                let mut num_to_spawn = self.rng.gen_range(0..3);
+                if self.population > 50
+                {
+                    num_to_spawn = 0;
+                }
+				for _ in 0..num_to_spawn
+				{
+					spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
+				}
 			}
 		}
 		let mut houses_to_free = vec![];
+        let mut num_left = 0;
 		if collect_agents
 		{
 			for (agent_id, (can_move, agent)) in self
@@ -964,9 +1099,15 @@ impl Map
 						houses_to_free.push(house_id);
 					}
 					to_die.push(agent_id);
+                    num_left += 1;
 				}
 			}
 		}
+        if let Some(port_id) = self.port
+        {
+            let provider = self.world.query_one_mut::<&mut comps::Provider>(port_id).unwrap();
+            provider.num_occupants -= num_left;
+        }
 		for house_id in houses_to_free
 		{
 			let (provider, scenery_draw) = self
@@ -1018,6 +1159,7 @@ impl Map
 			}
 			Event::MouseButtonDown { button, .. } =>
 			{
+				let mut indicators = vec![];
 				if button == 1
 				{
 					let mut spawn = None;
@@ -1058,11 +1200,25 @@ impl Map
 									&& tile_pos.y < start_y + height
 								{
 									to_die = Some(id);
+									self.money += provider.kind.get_cost();
 									break;
 								}
 							}
 							if let Some(id) = to_die
 							{
+								let (position, provider) = self
+									.world
+									.query_one_mut::<(&comps::Position, &comps::Provider)>(id)
+									.unwrap();
+								let position = position.clone();
+								let mut cost = provider.kind.get_cost();
+								if let Ok(plot) = self.world.query_one_mut::<&comps::Plot>(id)
+								{
+									cost = plot.kind.get_cost();
+								}
+								self.money += cost;
+								let (text, color) = get_money_indicator(cost, true);
+								indicators.push((pixel_to_tile(position.pos), text, color));
 								self.world.despawn(id)?;
 							}
 						}
@@ -1070,8 +1226,26 @@ impl Map
 					}
 					if let Some((position, kind)) = spawn
 					{
-						spawn_provider(position, kind, &mut self.world, state)?;
+						if self.money >= kind.get_cost()
+						{
+							spawn_provider(position, kind, &mut self.world, state)?;
+							let (text, color) = get_money_indicator(-kind.get_cost(), true);
+							indicators.push((position, text, color));
+							self.money -= kind.get_cost();
+						}
+						else
+						{
+							indicators.push((
+								position,
+								"No Money!".to_string(),
+								Color::from_rgb_f(0.8, 0.2, 0.3),
+							));
+						}
 					}
+				}
+				for (tile_pos, text, color) in indicators
+				{
+					spawn_indicator(tile_pos, text, color, &mut self.world, state)?;
 				}
 			}
 			_ => (),
@@ -1086,6 +1260,7 @@ impl Map
 			.clear_to_color(Color::from_rgb_f(0.05, 0.05, 0.1));
 		let terrain_sprite = state.get_sprite("data/terrain.cfg").unwrap();
 
+		// Terrain
 		let mut rng = StdRng::seed_from_u64(0);
 		state.core.hold_bitmap_drawing(true);
 		for y in 0..self.size as i32 - 1
@@ -1110,6 +1285,7 @@ impl Map
 			}
 		}
 
+		// Scenery
 		for (_, (position, scenery_draw)) in self
 			.world
 			.query::<(&comps::Position, &comps::SceneryDraw)>()
@@ -1124,6 +1300,8 @@ impl Map
 				state,
 			);
 		}
+
+		// Agents
 		for (_, (position, can_move, agent_draw)) in self
 			.world
 			.query::<(&comps::Position, &comps::CanMove, &comps::AgentDraw)>()
@@ -1164,6 +1342,7 @@ impl Map
 			}
 		}
 
+		// Blimp
 		if let Some(blimp) = self.blimp
 		{
 			let position = self.world.query_one_mut::<&comps::Position>(blimp).unwrap();
@@ -1176,6 +1355,24 @@ impl Map
 			);
 		}
 
+		// Indicator
+		for (_, (position, indicator)) in self
+			.world
+			.query::<(&comps::Position, &comps::Indicator)>()
+			.iter()
+		{
+			let text_pos = position.pos - self.camera_pos;
+			state.core.draw_text(
+				&state.ui_font,
+				indicator.color,
+				text_pos.x as f32,
+				text_pos.y as f32,
+				FontAlign::Centre,
+				&indicator.text,
+			);
+		}
+
+		// Cursor
 		match self.cursor_kind
 		{
 			CursorKind::BuildingPlacement(building_placement) =>
@@ -1190,6 +1387,7 @@ impl Map
 				let tile_pos = pixel_to_tile(position.pos);
 				let start_x = tile_pos.x - building_placement.width / 2;
 				let start_y = tile_pos.y - building_placement.height + 1;
+				let cost = building_placement.kind.get_cost();
 				for y in 0..building_placement.height
 				{
 					for x in 0..building_placement.width
@@ -1204,10 +1402,40 @@ impl Map
 						);
 					}
 				}
+				let text_pos = to_f32(
+					tile_to_pixel(Point2::new(start_x, start_y))
+						- self.camera_pos - Vector2::new(TILE_SIZE / 2, TILE_SIZE),
+				);
+				state.core.draw_text(
+					&state.ui_font,
+					Color::from_rgb(208, 248, 171),
+					text_pos.x,
+					text_pos.y,
+					FontAlign::Left,
+					&format!("${}", cost),
+				);
 			}
 			_ => (),
 		}
 		state.core.hold_bitmap_drawing(false);
+
+		let (text, color) = get_money_indicator(self.money, false);
+		state.core.draw_text(
+			&state.ui_font,
+			color,
+			0.,
+			0.,
+			FontAlign::Left,
+			&text,
+		);
+		state.core.draw_text(
+			&state.ui_font,
+			Color::from_rgb_f(0.9, 0.9, 0.3),
+			state.buffer_width - 56.,
+			0.,
+			FontAlign::Left,
+			&format!("Pop: {}", self.population),
+		);
 		Ok(())
 	}
 }

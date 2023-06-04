@@ -227,6 +227,7 @@ fn real_main() -> Result<()>
 			}
 			prev_frame_start = frame_start;
 			logics_without_draw = 0;
+            draw = false;
 		}
 
 		let event = queue.wait_for_event();

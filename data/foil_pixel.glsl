@@ -23,7 +23,12 @@ void main()
     );
     vec4 color = varying_color * texture2D(al_tex, uv);
 
-    float mask = float(color.xyz == vec3(153., 229., 80.) / 255.);
+    float mask = float(
+        (color.xyz == vec3(153., 229., 80.) / 255.) ||
+        (color.xyz == vec3(76., 137., 17.) / 255.) ||
+        (color.xyz == vec3(170., 243., 100.) / 255.) ||
+        (color.xyz == vec3(208., 248., 171.) / 255.)
+    );
 	gl_FragColor = mask * vec4(rot * color.xyz, color.w) + (1. - mask) * color;
 }
 
