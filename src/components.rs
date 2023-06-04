@@ -27,6 +27,7 @@ pub struct AgentDraw
 {
 	pub sprite: String,
 	pub visible: bool,
+    pub thought: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,15 @@ impl ProviderKind
             ProviderKind::Plot3x3 => (3, 3),
 		}
 	}
+
+    pub fn is_house(&self) -> bool
+    {
+        match self
+        {
+            ProviderKind::TakenHouse(_) | ProviderKind::EmptyHouse => true,
+            _ => false,
+        }
+    }
 
 	pub fn get_max_occupants(&self) -> i32
 	{
@@ -111,6 +121,8 @@ pub struct Agent
 	pub cur_provider: Option<hecs::Entity>,
 	pub house: Option<hecs::Entity>,
 	pub leaving: bool,
+    pub sleepyness: i32,
+    pub hunger: i32,
 }
 
 #[derive(Debug, Clone)]

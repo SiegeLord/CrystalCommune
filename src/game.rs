@@ -11,6 +11,7 @@ use rand::prelude::*;
 use std::collections::HashMap;
 
 static TILE_SIZE: i32 = 16;
+static MAX_SLEEPYNESS: i32 = 3000;
 
 pub struct Game
 {
@@ -118,6 +119,18 @@ fn to_f32(pos: Point2<i32>) -> Point2<f32>
 	Point2::new(pos.x as f32, pos.y as f32)
 }
 
+fn get_warp_location<T: Rng>(rng: &mut T, size: usize) -> (i32, i32)
+{
+	*[
+		(0, 0),
+		(0, size as i32 - 1),
+		(size as i32 - 1, 0),
+		(size as i32 - 1, size as i32 - 1),
+	]
+	.choose(rng)
+	.unwrap()
+}
+
 pub fn spawn_agent<T: Rng>(
 	tile_pos: Point2<i32>, world: &mut hecs::World, _state: &mut game_state::GameState,
 	_rng: &mut T,
@@ -132,6 +145,7 @@ pub fn spawn_agent<T: Rng>(
 		comps::AgentDraw {
 			sprite: "data/cat1.cfg".to_string(),
 			visible: true,
+			thought: None,
 		},
 		comps::CanMove {
 			moving: false,
@@ -143,6 +157,8 @@ pub fn spawn_agent<T: Rng>(
 			cur_provider: None,
 			house: None,
 			leaving: false,
+			hunger: 0,
+			sleepyness: 0,
 		},
 	));
 	Ok(entity)
@@ -273,6 +289,7 @@ impl Map
 		let mut terrain = Vec::with_capacity(size * size);
 		let mut rng = StdRng::seed_from_u64(0);
 
+		state.cache_sprite("data/thought_sleepy.cfg")?;
 		state.cache_sprite("data/plot_3x2.cfg")?;
 		state.cache_sprite("data/plot_3x3.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
@@ -514,7 +531,7 @@ impl Map
 			can_move.moving = true;
 
 			let target_tile = *tile_path.tile_path.last().unwrap();
-			if !walkable[tile_to_idx(target_tile, self.size).unwrap()]
+			if !walkable[tile_to_idx(target_tile, self.size).unwrap()] && !can_move.flies
 			{
 				can_move.moving = false;
 				tile_path.tile_path.clear();
@@ -593,7 +610,11 @@ impl Map
 				port_pos = Some(pixel_to_tile(port_position.pos));
 				if self.blimp.is_none()
 				{
-					self.blimp = Some(spawn_blimp(Point2::new(0, 0), &mut self.world)?);
+					let warp_location = get_warp_location(&mut self.rng, self.size);
+					self.blimp = Some(spawn_blimp(
+						Point2::new(warp_location.0, warp_location.1),
+						&mut self.world,
+					)?);
 				}
 			}
 		}
@@ -602,16 +623,21 @@ impl Map
 		let mut providers_to_change = vec![];
 		let mut providers_to_work = vec![];
 		let mut providers_to_house_claim = vec![];
-		for (agent_id, (position, tile_path, can_move, agent)) in self
+		for (agent_id, (position, tile_path, can_move, agent, agent_draw)) in self
 			.world
 			.query::<(
 				&comps::Position,
 				&mut comps::TilePath,
 				&mut comps::CanMove,
 				&mut comps::Agent,
+				&mut comps::AgentDraw,
 			)>()
 			.iter()
 		{
+			agent.hunger += 1;
+			agent.sleepyness += 1;
+			agent.hunger = utils::clamp(agent.hunger, 0, MAX_SLEEPYNESS);
+			agent.sleepyness = utils::clamp(agent.sleepyness, 0, MAX_SLEEPYNESS);
 			if let Some(provider) = agent.cur_provider
 			{
 				if !self.world.contains(provider)
@@ -636,9 +662,9 @@ impl Map
 			}
 			if state.time() > agent.time_to_work
 			{
-				if let Some(provider) = agent.cur_provider
+				if let Some(provider_id) = agent.cur_provider
 				{
-					providers_to_work.push(provider);
+					providers_to_work.push((provider_id, agent_id));
 				}
 				agent.time_to_work = state.time() + 1.;
 			}
@@ -647,37 +673,52 @@ impl Map
 				continue;
 			}
 			agent.time_to_think = state.time() + 5. + self.rng.gen::<f64>();
+			agent_draw.thought = None;
 
 			if let Some(provider) = agent.cur_provider.take()
 			{
 				providers_to_change.push((provider, -1));
 			}
 
-			let mut actions = vec![None];
+			let mut actions = vec![(None, 1.0)];
 			if agent.house.is_some()
 			{
-				actions.push(Some(comps::ProviderKind::TakenHouse(agent_id)));
+				actions.push((
+					Some(comps::ProviderKind::TakenHouse(agent_id)),
+					5. * agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
+				));
 			}
 			else
 			{
-				actions.push(Some(comps::ProviderKind::EmptyHouse));
+				actions.push((
+					Some(comps::ProviderKind::EmptyHouse),
+					5. * agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
+				));
 			}
 
-			for kind in [
-				comps::ProviderKind::Office,
-				comps::ProviderKind::Port,
-				comps::ProviderKind::Plot3x2,
-				comps::ProviderKind::Plot3x3,
+			for (kind, weight) in [
+				(comps::ProviderKind::Office, 1.0),
+				(
+					comps::ProviderKind::Port,
+					0.2 * agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
+				),
+				(comps::ProviderKind::Plot3x2, 2.0),
+				(comps::ProviderKind::Plot3x3, 2.0),
 			]
 			{
 				if kind_to_providers.contains_key(&kind)
 				{
-					actions.push(Some(kind));
+					actions.push((Some(kind), weight));
 				}
 			}
 
-			let action = actions.choose(&mut self.rng).unwrap();
-			println!("{agent_id:?}: {action:?}");
+			let (action, _) = actions
+				.choose_weighted(&mut self.rng, |(_, weight)| *weight)
+				.unwrap();
+			println!(
+				"{agent_id:?}: {action:?} hunger: {} sleepyness: {}",
+				agent.hunger, agent.sleepyness
+			);
 
 			if let Some(kind) = action
 			{
@@ -737,6 +778,10 @@ impl Map
 				}
 				if !can_move.moving
 				{
+					if kind.is_house()
+					{
+						agent_draw.thought = Some("data/thought_sleepy.cfg".to_string());
+					}
 					println!("Failed to act!");
 				}
 			}
@@ -761,7 +806,7 @@ impl Map
 			provider.kind = comps::ProviderKind::TakenHouse(agent_id);
 			scenery_draw.sprite = provider.kind.get_sprite().to_string();
 		}
-		for provider_id in providers_to_work
+		for (provider_id, agent_id) in providers_to_work
 		{
 			let mut plot_complete = None;
 			if let Ok(plot) = self.world.query_one_mut::<&mut comps::Plot>(provider_id)
@@ -771,6 +816,27 @@ impl Map
 				{
 					plot_complete = Some(plot.kind);
 				}
+			}
+			let mut hunger_change = 0;
+			let mut sleepyness_change = 0;
+			{
+				let provider = self
+					.world
+					.query_one_mut::<&mut comps::Provider>(provider_id)
+					.unwrap();
+				match provider.kind
+				{
+					comps::ProviderKind::TakenHouse(_) => sleepyness_change = -500,
+					_ => hunger_change = 50,
+				}
+			}
+			{
+				let agent = self
+					.world
+					.query_one_mut::<&mut comps::Agent>(agent_id)
+					.unwrap();
+				agent.hunger += hunger_change;
+				agent.sleepyness += sleepyness_change;
 			}
 			if let Some(kind) = plot_complete
 			{
@@ -809,6 +875,7 @@ impl Map
 		let mut add_agents = false;
 		if let Some(blimp_id) = self.blimp
 		{
+			let warp_location = get_warp_location(&mut self.rng, self.size);
 			let (blimp_pos, blimp, can_move, tile_path) = self
 				.world
 				.query_one_mut::<(
@@ -853,7 +920,7 @@ impl Map
 					{
 						tile_path.tile_path = get_tile_path(
 							pixel_to_tile(blimp_pos.pos),
-							Point2::new(0, 0),
+							Point2::new(warp_location.0, warp_location.1),
 							self.size,
 							&flyable,
 							false,
@@ -1081,16 +1148,20 @@ impl Map
 			sprite.draw(
 				to_f32(position.pos - self.camera_pos),
 				variant,
-				if agent_draw.visible
-				{
-					Color::from_rgb_f(1., 1., 1.)
-				}
-				else
-				{
-					Color::from_rgb_f(0.5, 0.5, 1.)
-				},
+				Color::from_rgb_f(1., 1., 1.),
 				state,
 			);
+
+			if let Some(thought) = agent_draw.thought.as_ref()
+			{
+				let sprite = state.get_sprite(&thought).unwrap();
+				sprite.draw(
+					to_f32(position.pos - self.camera_pos),
+					0,
+					Color::from_rgb_f(1., 1., 1.),
+					state,
+				);
+			}
 		}
 
 		if let Some(blimp) = self.blimp
