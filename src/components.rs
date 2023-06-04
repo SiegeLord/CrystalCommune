@@ -13,6 +13,7 @@ pub struct Position
 pub struct CanMove
 {
 	pub moving: bool,
+    pub flies: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +40,8 @@ pub enum ProviderKind
 {
     TakenHouse(hecs::Entity),
 	EmptyHouse,
-	Work,
+	Office,
+    Port,
 }
 
 impl ProviderKind
@@ -50,7 +52,19 @@ impl ProviderKind
         {
             ProviderKind::TakenHouse(_) => (3, 2),
             ProviderKind::EmptyHouse => (3, 2),
-            ProviderKind::Work => (3, 3),
+            ProviderKind::Office => (3, 3),
+            ProviderKind::Port => (3, 3),
+        }
+    }
+
+    pub fn get_max_occupants(&self) -> i32
+    {
+        match self
+        {
+            ProviderKind::TakenHouse(_) => 1,
+            ProviderKind::EmptyHouse => 1,
+            ProviderKind::Office => 3,
+            ProviderKind::Port => 5,
         }
     }
 }
@@ -70,6 +84,7 @@ pub struct Agent
     pub time_to_work: f64,
     pub cur_provider: Option<hecs::Entity>,
     pub house: Option<hecs::Entity>,
+    pub leaving: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,4 +94,20 @@ pub struct BuildingPlacement
     pub height: i32,
     pub valid: Vec<bool>,
     pub kind: ProviderKind,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BlimpState
+{
+    Spawned,
+    Arriving,
+    Waiting,
+    Leaving,
+}
+
+#[derive(Debug, Clone)]
+pub struct Blimp
+{
+    pub state: BlimpState,
+    pub time_to_leave: f64,
 }

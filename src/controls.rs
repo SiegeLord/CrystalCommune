@@ -7,6 +7,9 @@ use std::fmt;
 pub enum Action
 {
 	BuildHouse,
+    BuildOffice,
+    BuildPort,
+    Destroy,
 }
 
 impl Action
@@ -16,6 +19,9 @@ impl Action
 		match self
 		{
 			Action::BuildHouse => "BUILD HOUSE",
+			Action::BuildOffice => "BUILD OFFICE",
+			Action::BuildPort => "BUILD PORT",
+			Action::Destroy => "DESTROY",
 		}
 	}
 }
@@ -465,6 +471,18 @@ impl Controls
 		action_to_inputs.insert(
 			Action::BuildHouse,
 			[Some(Input::Keyboard(allegro::KeyCode::B)), None],
+		);
+		action_to_inputs.insert(
+			Action::BuildPort,
+			[Some(Input::Keyboard(allegro::KeyCode::P)), None],
+		);
+		action_to_inputs.insert(
+			Action::BuildOffice,
+			[Some(Input::Keyboard(allegro::KeyCode::O)), None],
+		);
+		action_to_inputs.insert(
+			Action::Destroy,
+			[Some(Input::Keyboard(allegro::KeyCode::D)), None],
 		);
 
 		Self {
