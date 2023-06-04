@@ -24,6 +24,31 @@ use serde_derive::{Deserialize, Serialize};
 use std::rc::Rc;
 use std::sync;
 
+fn make_foil_shader(disp: &mut Display) -> Result<sync::Weak<Shader>>
+{
+	let shader = disp.create_shader(ShaderPlatform::GLSL).unwrap();
+
+	shader
+		.upgrade()
+		.unwrap()
+		.attach_shader_source(
+			ShaderType::Vertex,
+			Some(&utils::read_to_string("data/foil_vertex.glsl")?),
+		)
+		.unwrap();
+
+	shader
+		.upgrade()
+		.unwrap()
+		.attach_shader_source(
+			ShaderType::Pixel,
+			Some(&utils::read_to_string("data/foil_pixel.glsl")?),
+		)
+		.unwrap();
+	shader.upgrade().unwrap().build().unwrap();
+	Ok(shader)
+}
+
 enum Screen
 {
 	Game(game::Game),
@@ -50,12 +75,14 @@ fn real_main() -> Result<()>
 			DisplayOptionImportance::Suggest,
 		);
 	}
-	let display = Display::new(&state.core, state.options.width, state.options.height)
+	let mut display = Display::new(&state.core, state.options.width, state.options.height)
 		.map_err(|_| "Couldn't create display".to_string())?;
 
 	let buffer_width = 160;
 	let buffer_height = 144;
 
+	let shader = make_foil_shader(&mut display)?;
+    let time_bias = Bitmap::load(&state.core, "data/time_bias.png").map_err(|_| "Couldn't load 'data/time_bias.png'".to_string())?;
 	let buffer1 = Bitmap::new(&state.core, buffer_width, buffer_height).unwrap();
 	let buffer2 = Bitmap::new(&state.core, buffer_width, buffer_height).unwrap();
 
@@ -135,21 +162,38 @@ fn real_main() -> Result<()>
 
 			state.core.set_target_bitmap(Some(&buffer2));
 
-			//state
-			//	.core
-			//	.use_shader(Some(&*teleport_shader.upgrade().unwrap()))
-			//	.unwrap();
-			//state
-			//	.core
-			//	.set_shader_uniform(
-			//		"bitmap_dims",
-			//		&[[buffer1.get_width() as f32, buffer1.get_height() as f32]][..],
-			//	)
-			//	.ok();
-			//state
-			//	.core
-			//	.set_shader_uniform("swirl_amount", &[state.swirl_amount][..])
-			//	.ok();
+			state
+				.core
+				.set_shader_uniform(
+					"bitmap_dims",
+					&[[buffer1.get_width() as f32, buffer1.get_height() as f32]][..],
+				)
+				.ok();
+			state
+				.core
+				.use_shader(Some(&*shader.upgrade().unwrap()))
+				.unwrap();
+			state
+				.core
+				.set_shader_uniform(
+					"bitmap_dims",
+					&[[buffer1.get_width() as f32, buffer1.get_height() as f32]][..],
+				)
+				.ok();
+
+            let theta = (state.tick % 200) as f32 / 200. * 2. * std::f32::consts::PI;
+			state
+				.core
+				.set_shader_uniform("time", &[theta][..])
+				.ok();
+			state
+				.core
+				.set_shader_uniform("draw_scale", &[0.5 * state.draw_scale][..])
+				.ok();
+			state
+				.core
+				.set_shader_sampler("time_bias_tex", &time_bias, 1)
+				.ok();
 
 			state.core.draw_bitmap(&buffer1, 0., 0., Flag::zero());
 
