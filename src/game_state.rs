@@ -31,7 +31,7 @@ impl Default for Options
 	fn default() -> Self
 	{
 		Self {
-			fullscreen: true,
+			fullscreen: false,
 			width: 960,
 			height: 864,
 			play_music: true,
