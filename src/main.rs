@@ -129,6 +129,7 @@ fn real_main() -> Result<()>
 	//let mut old_mouse_hide = state.hide_mouse;
 	let mut prev_frame_start = state.core.get_time();
     state.core.grab_mouse(&display).ok();
+    display.show_cursor(false).ok();
 
 	timer.start();
 	while !quit
@@ -248,10 +249,12 @@ fn real_main() -> Result<()>
             Event::DisplaySwitchIn { .. } =>
             {
                 state.core.grab_mouse(&display).ok();
+                display.show_cursor(false).ok();
             }
             Event::DisplaySwitchOut { .. } =>
             {
                 state.core.ungrab_mouse().ok();
+                display.show_cursor(true).ok();
             }
 			Event::TimerTick { .. } =>
 			{

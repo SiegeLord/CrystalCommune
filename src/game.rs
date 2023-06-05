@@ -13,6 +13,8 @@ use std::collections::HashMap;
 
 static TILE_SIZE: i32 = 16;
 static MAX_SLEEPYNESS: i32 = 3000;
+static NUM_BUTTONS: i32 = 7;
+static MEAN_TICKS: i32 = 500;
 
 pub struct Game
 {
@@ -184,8 +186,7 @@ pub fn spawn_indicator(
 }
 
 pub fn spawn_agent<T: Rng>(
-	tile_pos: Point2<i32>, world: &mut hecs::World, _state: &mut game_state::GameState,
-	_rng: &mut T,
+	tile_pos: Point2<i32>, world: &mut hecs::World, _state: &mut game_state::GameState, rng: &mut T,
 ) -> Result<hecs::Entity>
 {
 	let entity = world.spawn((
@@ -195,7 +196,10 @@ pub fn spawn_agent<T: Rng>(
 		},
 		comps::TilePath { tile_path: vec![] },
 		comps::AgentDraw {
-			sprite: "data/cat1.cfg".to_string(),
+			sprite: ["data/cat1.cfg", "data/cat2.cfg", "data/duck.cfg"]
+				.choose(rng)
+				.unwrap()
+				.to_string(),
 			visible: true,
 			thought: None,
 		},
@@ -216,9 +220,9 @@ pub fn spawn_agent<T: Rng>(
 	Ok(entity)
 }
 
-pub fn spawn_provider(
+pub fn spawn_provider<T: Rng>(
 	tile_pos: Point2<i32>, mut kind: comps::ProviderKind, world: &mut hecs::World,
-	state: &mut game_state::GameState,
+	state: &mut game_state::GameState, rng: &mut T,
 ) -> Result<hecs::Entity>
 {
 	let size = kind.get_size();
@@ -230,13 +234,15 @@ pub fn spawn_provider(
 		_ => panic!("Unknown plot size: {:?}", size),
 	}
 
+	let (sprite, variant) = kind.get_sprite(rng);
 	let entity = world.spawn((
 		comps::Position {
 			pos: tile_to_pixel(tile_pos),
 			dir: 0,
 		},
 		comps::SceneryDraw {
-			sprite: kind.get_sprite().to_string(),
+			sprite: sprite.to_string(),
+			variant: variant,
 		},
 		comps::Provider {
 			kind: kind,
@@ -334,7 +340,25 @@ struct Map
 	cursor_kind: CursorKind,
 	camera_pos: Vector2<i32>,
 	money: i32,
-    population: i32,
+	population: i32,
+
+	want_port: bool,
+	want_normal: bool,
+	want_destroy: bool,
+	want_house: bool,
+	want_mine: bool,
+
+	show_money_chart: bool,
+	money_history: Vec<i32>,
+	money_history_len: usize,
+	money_mean: f32,
+	money_mean_count: i32,
+
+	show_pop_chart: bool,
+	pop_history: Vec<i32>,
+	pop_history_len: usize,
+	pop_mean: f32,
+	pop_mean_count: i32,
 }
 
 impl Map
@@ -345,17 +369,22 @@ impl Map
 		let mut terrain = Vec::with_capacity(size * size);
 		let mut rng = StdRng::seed_from_u64(0);
 
+		state.cache_sprite("data/chart.cfg")?;
+		state.cache_sprite("data/cursor.cfg")?;
+		state.cache_sprite("data/buttons.cfg")?;
 		state.cache_sprite("data/thought_sleepy.cfg")?;
 		state.cache_sprite("data/plot_3x2.cfg")?;
 		state.cache_sprite("data/plot_3x3.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/cat1.cfg")?;
+		state.cache_sprite("data/cat2.cfg")?;
+		state.cache_sprite("data/duck.cfg")?;
 		state.cache_sprite("data/crystal1.cfg")?;
 		state.cache_sprite("data/crystal2.cfg")?;
-		state.cache_sprite("data/empty_house1.cfg")?;
 		state.cache_sprite("data/house1.cfg")?;
-		state.cache_sprite("data/office1.cfg")?;
+		state.cache_sprite("data/house2.cfg")?;
+		state.cache_sprite("data/mine1.cfg")?;
 		state.cache_sprite("data/port.cfg")?;
 		state.cache_sprite("data/blimp.cfg")?;
 		state.cache_sprite("data/building_placement.cfg")?;
@@ -397,16 +426,26 @@ impl Map
 		//)?;
 		//spawn_provider(
 		//	Point2::new(2, 6),
-		//	comps::ProviderKind::Office,
+		//	comps::ProviderKind::Mine,
 		//	&mut world,
 		//	state,
 		//)?;
 		//spawn_provider(
 		//	Point2::new(4, 5),
-		//	comps::ProviderKind::Office,
+		//	comps::ProviderKind::Mine,
 		//	&mut world,
 		//	state,
 		//)?;
+		//
+		let start_money = 10000;
+		let mut money_history = vec![0; 16];
+		let l = money_history.len();
+		money_history[l - 1] = start_money;
+
+		let start_pop = 2;
+		let mut pop_history = vec![0; 16];
+		let l = pop_history.len();
+		pop_history[l - 1] = start_pop;
 
 		Ok(Self {
 			size: size,
@@ -418,8 +457,23 @@ impl Map
 			blimp: None,
 			cursor_kind: CursorKind::Normal,
 			camera_pos: Vector2::new(0, 0),
-			money: 10000,
-            population: 0,
+			money: start_money,
+			population: 0,
+			want_normal: false,
+			want_destroy: false,
+			want_house: false,
+			want_port: false,
+			want_mine: false,
+			show_money_chart: false,
+			money_mean: start_money as f32,
+			money_mean_count: 0,
+			money_history_len: 1,
+			money_history: money_history,
+			show_pop_chart: false,
+			pop_mean: start_pop as f32,
+			pop_mean_count: 0,
+			pop_history_len: 1,
+			pop_history: pop_history,
 		})
 	}
 
@@ -428,28 +482,57 @@ impl Map
 	{
 		let mut to_die = vec![];
 
+		// History.
+		self.money_mean = (self.money_mean * self.money_mean_count as f32 + self.money as f32)
+			/ (self.money_mean_count + 1) as f32;
+		self.money_mean_count += 1;
+		if self.money_mean_count == MEAN_TICKS
+		{
+			self.money_history.rotate_left(1);
+			let l = self.money_history.len();
+			self.money_history[l - 1] = (self.money_mean + 0.5) as i32;
+			self.money_mean_count = 0;
+			self.money_mean = 0.;
+			self.money_history_len += 1;
+		}
+
+		self.pop_mean = (self.pop_mean * self.pop_mean_count as f32 + self.population as f32)
+			/ (self.pop_mean_count + 1) as f32;
+		self.pop_mean_count += 1;
+		if self.pop_mean_count == MEAN_TICKS
+		{
+			self.pop_history.rotate_left(1);
+			let l = self.pop_history.len();
+			self.pop_history[l - 1] = (self.pop_mean + 0.5) as i32;
+			self.pop_mean_count = 0;
+			self.pop_mean = 0.;
+			self.pop_history_len += 1;
+		}
+
 		// Input.
 		let mut build_kind = None;
 		let mut new_cursor = None;
 		if state
 			.controls
 			.get_action_state(controls::Action::BuildHouse)
-			> 0.5
+			> 0.5 || self.want_house
 		{
 			build_kind = Some(comps::ProviderKind::EmptyHouse);
 		}
-		if state.controls.get_action_state(controls::Action::BuildPort) > 0.5 && self.port.is_none()
+		if (state.controls.get_action_state(controls::Action::BuildPort) > 0.5 || self.want_port)
+			&& self.port.is_none()
 		{
 			build_kind = Some(comps::ProviderKind::Port);
 		}
-		if state
-			.controls
-			.get_action_state(controls::Action::BuildOffice)
-			> 0.5
+		if state.controls.get_action_state(controls::Action::BuildMine) > 0.5 || self.want_mine
 		{
-			build_kind = Some(comps::ProviderKind::Office);
+			build_kind = Some(comps::ProviderKind::Mine);
 		}
-		if state.controls.get_action_state(controls::Action::Destroy) > 0.5
+		if self.want_normal
+		{
+			new_cursor = Some(CursorKind::Normal);
+		}
+		if state.controls.get_action_state(controls::Action::Destroy) > 0.5 || self.want_destroy
 		{
 			new_cursor = Some(CursorKind::Destroy);
 		}
@@ -472,6 +555,11 @@ impl Map
 			}
 			self.cursor_kind = new_cursor;
 		}
+		self.want_normal = false;
+		self.want_destroy = false;
+		self.want_house = false;
+		self.want_port = false;
+		self.want_mine = false;
 
 		// Camera.
 		if self.mouse_pos.x <= 0
@@ -694,7 +782,7 @@ impl Map
 		}
 
 		// Agent.
-        self.population = 0;
+		self.population = 0;
 		let mut providers_to_change = vec![];
 		let mut providers_to_work = vec![];
 		let mut providers_to_house_claim = vec![];
@@ -710,7 +798,7 @@ impl Map
 			.iter()
 		{
 			self.population += 1;
-            agent.hunger += 1;
+			agent.hunger += 1;
 			agent.sleepyness += 1;
 			agent.hunger = utils::clamp(agent.hunger, 0, MAX_SLEEPYNESS);
 			agent.sleepyness = utils::clamp(agent.sleepyness, 0, MAX_SLEEPYNESS);
@@ -773,7 +861,7 @@ impl Map
 			}
 
 			for (kind, weight) in [
-				(comps::ProviderKind::Office, 1.0),
+				(comps::ProviderKind::Mine, 1.0),
 				(
 					comps::ProviderKind::Port,
 					10. * (agent.sleepyness as f32 / MAX_SLEEPYNESS as f32).powf(4.),
@@ -791,7 +879,7 @@ impl Map
 			let (action, _) = actions
 				.choose_weighted(&mut self.rng, |(_, weight)| *weight)
 				.unwrap();
-            println!("{agent_id:?} {actions:?}");
+			println!("{agent_id:?} {actions:?}");
 			println!(
 				"{agent_id:?}: {action:?} hunger: {} sleepyness: {}",
 				agent.hunger, agent.sleepyness
@@ -881,7 +969,7 @@ impl Map
 				.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(provider_id)
 				.unwrap();
 			provider.kind = comps::ProviderKind::TakenHouse(agent_id);
-			scenery_draw.sprite = provider.kind.get_sprite().to_string();
+			scenery_draw.variant = provider.kind.get_sprite(&mut self.rng).1
 		}
 		for (provider_id, agent_id) in providers_to_work
 		{
@@ -905,7 +993,7 @@ impl Map
 			let mut hunger_change = 0;
 			let mut sleepyness_change = 0;
 
-			let office_money = 50;
+			let mine_money = 50;
 			{
 				let (position, provider) = self
 					.world
@@ -922,10 +1010,10 @@ impl Map
 							Color::from_rgb_f(0.4, 0.3, 0.9),
 						));
 					}
-					comps::ProviderKind::Office =>
+					comps::ProviderKind::Mine =>
 					{
-						self.money += office_money;
-						let (text, color) = get_money_indicator(office_money, true);
+						self.money += mine_money;
+						let (text, color) = get_money_indicator(mine_money, true);
 						indicators.push((
 							pixel_to_tile(position.pos) - Vector2::new(0, 1),
 							text,
@@ -960,7 +1048,9 @@ impl Map
 				{
 					self.port = Some(provider_id);
 				}
-				scenery_draw.sprite = kind.get_sprite().to_string();
+				let (sprite, variant) = kind.get_sprite(&mut self.rng);
+				scenery_draw.sprite = sprite.to_string();
+				scenery_draw.variant = variant;
 				self.world.remove_one::<comps::Plot>(provider_id)?;
 			}
 
@@ -1072,11 +1162,11 @@ impl Map
 		{
 			if let Some(port_pos) = port_pos
 			{
-                let mut num_to_spawn = self.rng.gen_range(0..3);
-                if self.population > 50
-                {
-                    num_to_spawn = 0;
-                }
+				let mut num_to_spawn = self.rng.gen_range(0..3);
+				if self.population > 50
+				{
+					num_to_spawn = 0;
+				}
 				for _ in 0..num_to_spawn
 				{
 					spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
@@ -1084,7 +1174,7 @@ impl Map
 			}
 		}
 		let mut houses_to_free = vec![];
-        let mut num_left = 0;
+		let mut num_left = 0;
 		if collect_agents
 		{
 			for (agent_id, (can_move, agent)) in self
@@ -1099,15 +1189,18 @@ impl Map
 						houses_to_free.push(house_id);
 					}
 					to_die.push(agent_id);
-                    num_left += 1;
+					num_left += 1;
 				}
 			}
 		}
-        if let Some(port_id) = self.port
-        {
-            let provider = self.world.query_one_mut::<&mut comps::Provider>(port_id).unwrap();
-            provider.num_occupants -= num_left;
-        }
+		if let Some(port_id) = self.port
+		{
+			let provider = self
+				.world
+				.query_one_mut::<&mut comps::Provider>(port_id)
+				.unwrap();
+			provider.num_occupants -= num_left;
+		}
 		for house_id in houses_to_free
 		{
 			let (provider, scenery_draw) = self
@@ -1115,7 +1208,7 @@ impl Map
 				.query_one_mut::<(&mut comps::Provider, &mut comps::SceneryDraw)>(house_id)
 				.unwrap();
 			provider.kind = comps::ProviderKind::EmptyHouse;
-			scenery_draw.sprite = provider.kind.get_sprite().to_string();
+			scenery_draw.variant = provider.kind.get_sprite(&mut self.rng).1;
 		}
 
 		// Remove dead entities
@@ -1147,105 +1240,140 @@ impl Map
 				..
 			} =>
 			{
-				match self.cursor_kind
-				{
-					CursorKind::BuildingPlacement(building_placement) =>
-					{
-						self.world.despawn(building_placement)?;
-					}
-					_ => (),
-				}
-				self.cursor_kind = CursorKind::Normal;
+				self.want_normal = true;
 			}
 			Event::MouseButtonDown { button, .. } =>
 			{
 				let mut indicators = vec![];
 				if button == 1
 				{
-					let mut spawn = None;
-					match self.cursor_kind
+					let offt = 16 * NUM_BUTTONS / 2;
+					let left_x = state.buffer_width as i32 / 2 - offt;
+					let left_y = state.buffer_height as i32 - 16;
+					let right_x = state.buffer_width as i32 / 2 + offt;
+					let right_y = state.buffer_height as i32;
+
+					if self.mouse_pos.x >= left_x
+						&& self.mouse_pos.x < right_x
+						&& self.mouse_pos.y >= left_y
+						&& self.mouse_pos.y < right_y
 					{
-						CursorKind::BuildingPlacement(building_placement) =>
+						let button = (self.mouse_pos.x - left_x) / 16;
+						match button
 						{
-							let (position, building_placement) = self
-								.world
-								.query_one_mut::<(&mut comps::Position, &mut comps::BuildingPlacement)>(
-									building_placement,
-								)
-								.unwrap();
-							if building_placement.valid.iter().all(|x| *x)
+							0 => self.want_normal = true,
+							1 => self.want_destroy = true,
+							2 => self.want_house = true,
+							3 => self.want_mine = true,
+							4 => self.want_port = true,
+							5 =>
 							{
-								spawn =
-									Some((pixel_to_tile(position.pos), building_placement.kind));
+								self.show_money_chart = !self.show_money_chart;
+								self.show_pop_chart = false;
 							}
+							6 =>
+							{
+								self.show_pop_chart = !self.show_pop_chart;
+								self.show_money_chart = false;
+							}
+							_ => (),
 						}
-						CursorKind::Destroy =>
+					}
+					else
+					{
+						let mut spawn = None;
+						match self.cursor_kind
 						{
-							let tile_pos = pixel_to_tile(
-								self.mouse_pos
-									+ self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
-							);
-							let mut to_die = None;
-							for (id, (position, provider)) in self
-								.world
-								.query::<(&comps::Position, &comps::Provider)>()
-								.iter()
+							CursorKind::BuildingPlacement(building_placement) =>
 							{
-								let provider_tile_pos = pixel_to_tile(position.pos);
-								let (width, height) = provider.kind.get_size();
-								let start_x = provider_tile_pos.x - width / 2;
-								let start_y = provider_tile_pos.y - height + 1;
-								if tile_pos.x >= start_x
-									&& tile_pos.x < start_x + width && tile_pos.y >= start_y
-									&& tile_pos.y < start_y + height
-								{
-									to_die = Some(id);
-									self.money += provider.kind.get_cost();
-									break;
-								}
-							}
-							if let Some(id) = to_die
-							{
-								let (position, provider) = self
+								let (position, building_placement) = self
 									.world
-									.query_one_mut::<(&comps::Position, &comps::Provider)>(id)
+									.query_one_mut::<(&mut comps::Position, &mut comps::BuildingPlacement)>(
+										building_placement,
+									)
 									.unwrap();
-								let position = position.clone();
-								let mut cost = provider.kind.get_cost();
-								if let Ok(plot) = self.world.query_one_mut::<&comps::Plot>(id)
+								if building_placement.valid.iter().all(|x| *x)
 								{
-									cost = plot.kind.get_cost();
+									spawn = Some((
+										pixel_to_tile(position.pos),
+										building_placement.kind,
+									));
 								}
-								self.money += cost;
-								let (text, color) = get_money_indicator(cost, true);
-								indicators.push((pixel_to_tile(position.pos), text, color));
-								self.world.despawn(id)?;
+							}
+							CursorKind::Destroy =>
+							{
+								let tile_pos = pixel_to_tile(
+									self.mouse_pos
+										+ self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
+								);
+								let mut to_die = None;
+								for (id, (position, provider)) in self
+									.world
+									.query::<(&comps::Position, &comps::Provider)>()
+									.iter()
+								{
+									let provider_tile_pos = pixel_to_tile(position.pos);
+									let (width, height) = provider.kind.get_size();
+									let start_x = provider_tile_pos.x - width / 2;
+									let start_y = provider_tile_pos.y - height + 1;
+									if tile_pos.x >= start_x
+										&& tile_pos.x < start_x + width && tile_pos.y >= start_y
+										&& tile_pos.y < start_y + height
+									{
+										to_die = Some(id);
+										self.money += provider.kind.get_cost();
+										break;
+									}
+								}
+								if let Some(id) = to_die
+								{
+									let (position, provider) = self
+										.world
+										.query_one_mut::<(&comps::Position, &comps::Provider)>(id)
+										.unwrap();
+									let position = position.clone();
+									let mut cost = provider.kind.get_cost();
+									if let Ok(plot) = self.world.query_one_mut::<&comps::Plot>(id)
+									{
+										cost = plot.kind.get_cost();
+									}
+									self.money += cost;
+									let (text, color) = get_money_indicator(cost, true);
+									indicators.push((pixel_to_tile(position.pos), text, color));
+									self.world.despawn(id)?;
+								}
+							}
+							_ => (),
+						}
+						if let Some((position, kind)) = spawn
+						{
+							if self.money >= kind.get_cost()
+							{
+								spawn_provider(
+									position,
+									kind,
+									&mut self.world,
+									state,
+									&mut self.rng,
+								)?;
+								let (text, color) = get_money_indicator(-kind.get_cost(), true);
+								indicators.push((position, text, color));
+								self.money -= kind.get_cost();
+							}
+							else
+							{
+								indicators.push((
+									position,
+									"No Money!".to_string(),
+									Color::from_rgb_f(0.8, 0.2, 0.3),
+								));
 							}
 						}
-						_ => (),
 					}
-					if let Some((position, kind)) = spawn
+					for (tile_pos, text, color) in indicators
 					{
-						if self.money >= kind.get_cost()
-						{
-							spawn_provider(position, kind, &mut self.world, state)?;
-							let (text, color) = get_money_indicator(-kind.get_cost(), true);
-							indicators.push((position, text, color));
-							self.money -= kind.get_cost();
-						}
-						else
-						{
-							indicators.push((
-								position,
-								"No Money!".to_string(),
-								Color::from_rgb_f(0.8, 0.2, 0.3),
-							));
-						}
+						spawn_indicator(tile_pos, text, color, &mut self.world, state)?;
 					}
-				}
-				for (tile_pos, text, color) in indicators
-				{
-					spawn_indicator(tile_pos, text, color, &mut self.world, state)?;
 				}
 			}
 			_ => (),
@@ -1295,7 +1423,7 @@ impl Map
 
 			sprite.draw(
 				to_f32(position.pos - self.camera_pos),
-				0,
+				scenery_draw.variant,
 				Color::from_rgb_f(1., 1., 1.),
 				state,
 			);
@@ -1420,14 +1548,9 @@ impl Map
 		state.core.hold_bitmap_drawing(false);
 
 		let (text, color) = get_money_indicator(self.money, false);
-		state.core.draw_text(
-			&state.ui_font,
-			color,
-			0.,
-			0.,
-			FontAlign::Left,
-			&text,
-		);
+		state
+			.core
+			.draw_text(&state.ui_font, color, 0., 0., FontAlign::Left, &text);
 		state.core.draw_text(
 			&state.ui_font,
 			Color::from_rgb_f(0.9, 0.9, 0.3),
@@ -1436,6 +1559,122 @@ impl Map
 			FontAlign::Left,
 			&format!("Pop: {}", self.population),
 		);
+
+		if self.show_money_chart || self.show_pop_chart
+		{
+			let sprite = state.get_sprite("data/chart.cfg").unwrap();
+			sprite.draw(
+				Point2::new(
+					state.buffer_width / 2. - 64.,
+					state.buffer_height / 2. - 64.,
+				),
+				0,
+				Color::from_rgb_f(1., 1., 1.),
+				state,
+			);
+
+			let (history, history_len) = if self.show_money_chart
+			{
+				(&self.money_history, self.money_history_len)
+			}
+			else
+			{
+				(&self.pop_history, self.pop_history_len)
+			};
+
+			let mut max = *history.iter().reduce(std::cmp::max).unwrap() as f32;
+			let min = *history.iter().reduce(std::cmp::min).unwrap() as f32;
+			if max == min
+			{
+				max = min + 1.;
+			}
+
+			for i in history.len() - utils::min(history.len(), history_len)..history.len() - 1
+			{
+				let y1 = history[i] as f32;
+				let y2 = history[i + 1] as f32;
+
+				let h = 48.;
+				let w = 64.;
+				let y1 = h - (y1 - min) / (max - min) * h;
+				let y2 = h - (y2 - min) / (max - min) * h;
+				let x1 = i as f32 / history.len() as f32 * w;
+				let x2 = (i + 1) as f32 / history.len() as f32 * w;
+
+				let offt_x = state.buffer_width / 2. - w / 2.;
+				let offt_y = state.buffer_height / 2. - h / 2.;
+				state.prim.draw_line(
+					x1 + offt_x,
+					y1 + offt_y,
+					x2 + offt_x,
+					y2 + offt_y,
+					Color::from_rgb_f(0.8, 0.2, 0.3),
+					-1.,
+				);
+			}
+			let text = if self.show_money_chart
+			{
+				get_money_indicator(max as i32, false).0
+			}
+			else
+			{
+				format!("{} pop", max as i32)
+			};
+			state.core.draw_text(
+				&state.ui_font,
+				Color::from_rgb_f(0., 0., 0.),
+				state.buffer_width / 2. - 64. + 8.,
+				state.buffer_height / 2. - 48. + 8.,
+				FontAlign::Left,
+				&text,
+			);
+
+			let text = if self.show_money_chart
+			{
+				get_money_indicator(min as i32, false).0
+			}
+			else
+			{
+				format!("{} pop", min as i32)
+			};
+			state.core.draw_text(
+				&state.ui_font,
+				Color::from_rgb_f(0., 0., 0.),
+				state.buffer_width / 2. - 64. + 8.,
+				state.buffer_height / 2. + 48. - 16.,
+				FontAlign::Left,
+				&text,
+			);
+		}
+
+		let sprite = state.get_sprite("data/buttons.cfg").unwrap();
+		let offt = 16. * NUM_BUTTONS as f32 / 2.;
+		for i in 0..NUM_BUTTONS
+		{
+			sprite.draw(
+				Point2::new(
+					state.buffer_width / 2. - offt + i as f32 * 16.,
+					state.buffer_height - 16.,
+				),
+				i,
+				Color::from_rgb_f(1., 1., 1.),
+				state,
+			);
+		}
+
+		let sprite = state.get_sprite("data/cursor.cfg").unwrap();
+		let variant = match self.cursor_kind
+		{
+			CursorKind::Normal | CursorKind::BuildingPlacement(_) => 0,
+			CursorKind::Destroy => 1,
+		};
+		sprite.draw(
+			to_f32(self.mouse_pos),
+			variant,
+			Color::from_rgb_f(1., 1., 1.),
+			state,
+		);
+
 		Ok(())
 	}
 }
