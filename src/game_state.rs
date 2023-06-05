@@ -49,7 +49,7 @@ pub enum NextScreen
 {
 	Game,
 	Menu,
-    InGameMenu,
+	InGameMenu,
 	Quit,
 }
 
@@ -163,10 +163,7 @@ impl GameState
 			buffer_height: buffer_height,
 			controls: controls,
 			track_mouse: true,
-			mouse_pos: Point2::new(
-				buffer_width as i32 / 2,
-				buffer_height as i32 / 2,
-			),
+			mouse_pos: Point2::new(buffer_width as i32 / 2, buffer_height as i32 / 2),
 		})
 	}
 

@@ -81,7 +81,8 @@ fn real_main() -> Result<()>
 		.map_err(|_| "Couldn't create display".to_string())?;
 
 	let shader = make_foil_shader(&mut display)?;
-    let time_bias = Bitmap::load(&state.core, "data/time_bias.png").map_err(|_| "Couldn't load 'data/time_bias.png'".to_string())?;
+	let time_bias = Bitmap::load(&state.core, "data/time_bias.png")
+		.map_err(|_| "Couldn't load 'data/time_bias.png'".to_string())?;
 	let buffer1 = Bitmap::new(&state.core, buffer_width, buffer_height).unwrap();
 	let buffer2 = Bitmap::new(&state.core, buffer_width, buffer_height).unwrap();
 
@@ -116,9 +117,7 @@ fn real_main() -> Result<()>
 	let mut quit = false;
 	let mut draw = true;
 
-	let mut cur_screen = Screen::Menu(menu::Menu::new(
-		&mut state,
-	)?);
+	let mut cur_screen = Screen::Menu(menu::Menu::new(&mut state)?);
 	//let mut cur_screen = Screen::Game(game::Game::new(
 	//	&mut state,
 	//)?);
@@ -126,8 +125,8 @@ fn real_main() -> Result<()>
 	let mut logics_without_draw = 0;
 	let mut old_fullscreen = state.options.fullscreen;
 	let mut prev_frame_start = state.core.get_time();
-    state.core.grab_mouse(&display).ok();
-    display.show_cursor(false).ok();
+	state.core.grab_mouse(&display).ok();
+	display.show_cursor(false).ok();
 
 	timer.start();
 	while !quit
@@ -181,11 +180,8 @@ fn real_main() -> Result<()>
 				)
 				.ok();
 
-            let theta = (state.tick % 200) as f32 / 200. * 2. * std::f32::consts::PI;
-			state
-				.core
-				.set_shader_uniform("time", &[theta][..])
-				.ok();
+			let theta = (state.tick % 200) as f32 / 200. * 2. * std::f32::consts::PI;
+			state.core.set_shader_uniform("time", &[theta][..]).ok();
 			state
 				.core
 				.set_shader_uniform("draw_scale", &[0.5 * state.draw_scale][..])
@@ -227,7 +223,7 @@ fn real_main() -> Result<()>
 			}
 			prev_frame_start = frame_start;
 			logics_without_draw = 0;
-            draw = false;
+			draw = false;
 		}
 
 		let event = queue.wait_for_event();
@@ -246,24 +242,24 @@ fn real_main() -> Result<()>
 					.acknowledge_resize()
 					.map_err(|_| "Couldn't acknowledge resize".to_string())?;
 			}
-            Event::DisplaySwitchIn { .. } =>
-            {
-                state.core.grab_mouse(&display).ok();
-                display.show_cursor(false).ok();
-                state.track_mouse = true;
-            }
-            Event::DisplaySwitchOut { .. } =>
-            {
-                state.core.ungrab_mouse().ok();
-                display.show_cursor(true).ok();
-                state.track_mouse = false;
-            }
+			Event::DisplaySwitchIn { .. } =>
+			{
+				state.core.grab_mouse(&display).ok();
+				display.show_cursor(false).ok();
+				state.track_mouse = true;
+			}
+			Event::DisplaySwitchOut { .. } =>
+			{
+				state.core.ungrab_mouse().ok();
+				display.show_cursor(true).ok();
+				state.track_mouse = false;
+			}
 			Event::MouseButtonDown { .. } =>
 			{
-                state.core.grab_mouse(&display).ok();
-                display.show_cursor(false).ok();
-                state.track_mouse = true;
-            }
+				state.core.grab_mouse(&display).ok();
+				display.show_cursor(false).ok();
+				state.track_mouse = true;
+			}
 			Event::TimerTick { .. } =>
 			{
 				if logics_without_draw > 10
@@ -304,21 +300,17 @@ fn real_main() -> Result<()>
 			{
 				game_state::NextScreen::Game =>
 				{
-					cur_screen = Screen::Game(game::Game::new(
-						&mut state,
-					)?);
+					cur_screen = Screen::Game(game::Game::new(&mut state)?);
 				}
 				game_state::NextScreen::Menu =>
 				{
-					cur_screen = Screen::Menu(menu::Menu::new(
-						&mut state,
-					)?);
+					cur_screen = Screen::Menu(menu::Menu::new(&mut state)?);
 				}
 				game_state::NextScreen::Quit =>
 				{
 					quit = true;
 				}
-                _ => panic!("Unknown next screen {:?}", next_screen),
+				_ => panic!("Unknown next screen {:?}", next_screen),
 			}
 		}
 	}

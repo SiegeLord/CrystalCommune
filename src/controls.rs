@@ -7,11 +7,11 @@ use std::fmt;
 pub enum Action
 {
 	BuildHouse,
-    BuildMine,
-    BuildPort,
-    BuildRoad,
-    BuildCafe,
-    Destroy,
+	BuildMine,
+	BuildPort,
+	BuildRoad,
+	BuildCafe,
+	Destroy,
 }
 
 impl Action

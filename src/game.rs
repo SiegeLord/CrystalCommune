@@ -270,7 +270,7 @@ impl Game
 		}
 		if self.subscreens.is_empty()
 		{
-            let in_game_menu;
+			let in_game_menu;
 			match *event
 			{
 				Event::KeyDown {
@@ -287,10 +287,10 @@ impl Game
 					{
 						in_game_menu = true;
 					}
-                    else
-                    {
-                        return res;
-                    }
+					else
+					{
+						return res;
+					}
 				}
 			}
 			if in_game_menu
@@ -1771,7 +1771,7 @@ impl Map
 								self.show_pop_chart = !self.show_pop_chart;
 								self.show_money_chart = false;
 							}
-                            9 => return Ok(Some(game_state::NextScreen::InGameMenu)),
+							9 => return Ok(Some(game_state::NextScreen::InGameMenu)),
 							_ => (),
 						}
 					}

@@ -17,7 +17,7 @@ pub enum Action
 	Forward(fn(&mut game_state::GameState, f32, f32) -> SubScreen),
 	ToggleFullscreen,
 	ChangeInput(controls::Action, usize),
-    MouseSensitivity(f32),
+	MouseSensitivity(f32),
 	MusicVolume(f32),
 	SfxVolume(f32),
 	CameraSpeed(i32),
@@ -440,7 +440,7 @@ impl Label
 	{
 		state.core.draw_text(
 			&state.ui_font,
-			Color::from_rgb_f(0.6, 0.4, 0.2),
+			Color::from_rgb_f(0.8 * 0.37, 0.8 * 0.8, 0.8 * 0.89),
 			self.loc.x,
 			self.loc.y - state.ui_font.get_line_height() as f32 / 2.,
 			FontAlign::Centre,
@@ -879,13 +879,7 @@ impl ControlsMenu
 
 		for (&action, &inputs) in state.controls.get_actions_to_inputs()
 		{
-			let mut row = vec![Widget::Label(Label::new(
-				0.,
-				0.,
-				w,
-				h,
-				&action.to_str()
-			))];
+			let mut row = vec![Widget::Label(Label::new(0., 0., w, h, &action.to_str()))];
 			for i in 0..2
 			{
 				let input = inputs[i];

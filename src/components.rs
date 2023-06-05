@@ -36,7 +36,7 @@ pub struct AgentDraw
 pub struct SceneryDraw
 {
 	pub sprite: String,
-    pub variant: i32,
+	pub variant: i32,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -50,7 +50,7 @@ pub enum ProviderKind
 	Plot1x1,
 	Plot3x2,
 	Plot3x3,
-    Road,
+	Road,
 }
 
 impl ProviderKind
