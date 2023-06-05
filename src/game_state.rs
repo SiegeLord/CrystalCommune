@@ -133,7 +133,7 @@ impl GameState
 		core.install_mouse()
 			.map_err(|_| "Couldn't install mouse".to_string())?;
 
-		//let sfx = sfx::Sfx::new(options.sfx_volume, options.music_volume, &core)?;
+		let sfx = sfx::Sfx::new(options.sfx_volume, options.music_volume, &core)?;
 
         let ui_font = Font::new_builtin(&font).map_err(|_| "Could't create builtin font.".to_string())?;
 		//let number_font = ttf
@@ -151,7 +151,7 @@ impl GameState
 			sprites: HashMap::new(),
 			font: font,
 			ttf: ttf,
-			//sfx: sfx,
+			sfx: sfx,
 			paused: false,
 			atlas: atlas::Atlas::new(512),
 			ui_font: ui_font,

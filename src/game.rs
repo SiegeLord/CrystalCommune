@@ -434,6 +434,7 @@ pub fn spawn_provider<T: Rng>(
 	let real_kind = kind;
 	match size
 	{
+		(1, 1) => kind = comps::ProviderKind::Plot1x1,
 		(3, 2) => kind = comps::ProviderKind::Plot3x2,
 		(3, 3) => kind = comps::ProviderKind::Plot3x3,
 		_ => panic!("Unknown plot size: {:?}", size),
@@ -458,7 +459,7 @@ pub fn spawn_provider<T: Rng>(
 		comps::Plot {
 			kind: real_kind,
 			work_done: 0,
-			work_total: 2,
+			work_total: real_kind.get_work_total(),
 		},
 	));
 	Ok(entity)
@@ -527,7 +528,8 @@ pub fn spawn_blimp(tile_pos: Point2<i32>, world: &mut hecs::World) -> Result<hec
 }
 
 fn get_tile_path(
-	from: Point2<i32>, to: Point2<i32>, size: usize, walkable: &[bool], allow_partial: bool,
+	from: Point2<i32>, to: Point2<i32>, size: usize, walkable: &[bool], walk_speed: Option<&[f32]>,
+	allow_partial: bool,
 ) -> Vec<Point2<i32>>
 {
 	let mut ctx = astar::AStarContext::new(size);
@@ -535,7 +537,7 @@ fn get_tile_path(
 		from,
 		to,
 		|pos| tile_to_idx(pos, size).map_or(true, |idx| !walkable[idx]),
-		|_| 1.,
+		|pos| tile_to_idx(pos, size).map_or(1., |idx| walk_speed.map_or(1., |ws| 1. / ws[idx])),
 	);
 	if !path.is_empty() && path[0] != to && !allow_partial
 	{
@@ -575,6 +577,7 @@ struct Map
 	want_destroy: bool,
 	want_cafe: bool,
 	want_house: bool,
+	want_road: bool,
 	want_mine: bool,
 
 	show_money_chart: bool,
@@ -596,11 +599,13 @@ impl Map
 	{
 		let mut rng = StdRng::seed_from_u64(thread_rng().gen::<u16>() as u64);
 
+		state.cache_sprite("data/road.cfg")?;
 		state.cache_sprite("data/chart.cfg")?;
 		state.cache_sprite("data/cursor.cfg")?;
 		state.cache_sprite("data/buttons.cfg")?;
 		state.cache_sprite("data/thought_sleepy.cfg")?;
 		state.cache_sprite("data/thought_hungry.cfg")?;
+		state.cache_sprite("data/plot_1x1.cfg")?;
 		state.cache_sprite("data/plot_3x2.cfg")?;
 		state.cache_sprite("data/plot_3x3.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
@@ -649,8 +654,7 @@ impl Map
 						> (0.4 * max) as i32
 				};
 				if val
-					&& rng.gen_bool(0.1) && ((x as i32 - size / 2).abs()
-					+ (y as i32 - size / 2))
+					&& rng.gen_bool(0.1) && ((x as i32 - size / 2).abs() + (y as i32 - size / 2))
 					.abs() > 5
 				{
 					let pos = Point2::new(x as i32, y as i32);
@@ -665,16 +669,16 @@ impl Map
 		{
 			for x in 0..size
 			{
-                let mut min_dist = size;
-                let tile_pos = Point2::new(x as f32, y as f32);
-                for crystal_pos in &crystal_positions
-                {
-                    let dist = (to_f32(*crystal_pos) - tile_pos).magnitude() as i32;
-                    min_dist = utils::min(dist, min_dist);
-                }
-                crystal_distance.push(min_dist);
-            }
-        }
+				let mut min_dist = size;
+				let tile_pos = Point2::new(x as f32, y as f32);
+				for crystal_pos in &crystal_positions
+				{
+					let dist = (to_f32(*crystal_pos) - tile_pos).magnitude() as i32;
+					min_dist = utils::min(dist, min_dist);
+				}
+				crystal_distance.push(min_dist);
+			}
+		}
 
 		let from = Point2::new(size / 2, size / 2);
 		//terrain[tile_to_idx(from, size).unwrap()] = true;
@@ -714,6 +718,7 @@ impl Map
 			want_destroy: false,
 			want_cafe: false,
 			want_house: false,
+			want_road: false,
 			want_port: false,
 			want_mine: false,
 			show_money_chart: false,
@@ -726,7 +731,7 @@ impl Map
 			pop_mean_count: 0,
 			pop_history_len: 1,
 			pop_history: pop_history,
-            crystal_distance: crystal_distance,
+			crystal_distance: crystal_distance,
 		})
 	}
 
@@ -765,6 +770,10 @@ impl Map
 		// Input.
 		let mut build_kind = None;
 		let mut new_cursor = None;
+		if state.controls.get_action_state(controls::Action::BuildRoad) > 0.5 || self.want_road
+		{
+			build_kind = Some(comps::ProviderKind::Road);
+		}
 		if state
 			.controls
 			.get_action_state(controls::Action::BuildHouse)
@@ -816,6 +825,7 @@ impl Map
 		self.want_destroy = false;
 		self.want_cafe = false;
 		self.want_house = false;
+		self.want_road = false;
 		self.want_port = false;
 		self.want_mine = false;
 
@@ -851,6 +861,7 @@ impl Map
 		let mut buildable = self.terrain.clone();
 		let mut walkable = self.terrain.clone();
 		let flyable = vec![true; buildable.len()];
+		let mut walk_speed = vec![1.; buildable.len()];
 		for (_, (position, _)) in self
 			.world
 			.query::<(&comps::Position, &comps::Crystal)>()
@@ -884,6 +895,14 @@ impl Map
 					{
 						buildable[idx] = false;
 						walkable[idx] = cur_tile_pos == tile_pos;
+						walk_speed[idx] = if provider.kind == comps::ProviderKind::Road
+						{
+							2.
+						}
+						else
+						{
+							1.
+						};
 					}
 				}
 			}
@@ -950,7 +969,8 @@ impl Map
 			can_move.moving = true;
 
 			let target_tile = *tile_path.tile_path.last().unwrap();
-			if !walkable[tile_to_idx(target_tile, self.size).unwrap()] && !can_move.flies
+			let target_idx = tile_to_idx(target_tile, self.size).unwrap();
+			if !walkable[target_idx] && !can_move.flies
 			{
 				can_move.moving = false;
 				tile_path.tile_path.clear();
@@ -958,24 +978,32 @@ impl Map
 				continue;
 			}
 			let target = tile_to_pixel(target_tile);
+			let speed = if can_move.flies
+			{
+				2
+			}
+			else
+			{
+				walk_speed[target_idx] as i32
+			};
 			if target.x > position.pos.x
 			{
-				position.pos.x += 1;
+				position.pos.x += speed;
 				position.dir = 0;
 			}
 			if target.y > position.pos.y
 			{
-				position.pos.y += 1;
+				position.pos.y += speed;
 				position.dir = 1;
 			}
 			if target.x < position.pos.x
 			{
-				position.pos.x -= 1;
+				position.pos.x -= speed;
 				position.dir = 2;
 			}
 			if target.y < position.pos.y
 			{
-				position.pos.y -= 1;
+				position.pos.y -= speed;
 				position.dir = 3;
 			}
 			if target == position.pos
@@ -1001,6 +1029,10 @@ impl Map
 			.query::<(&comps::Position, &mut comps::Provider)>()
 			.iter()
 		{
+			if provider.kind == comps::ProviderKind::Road
+			{
+				continue;
+			}
 			if state.time() > provider.time_to_maintain
 			{
 				let maintenance_cost = provider.kind.get_cost() / 10;
@@ -1143,12 +1175,13 @@ impl Map
 				(comps::ProviderKind::Mine, 2.0),
 				(
 					comps::ProviderKind::Port,
-					10. * utils::max(
+					5. * utils::max(
 						agent.hunger as f32 / MAX_HUNGER as f32,
 						agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
 					)
 					.powf(4.),
 				),
+				(comps::ProviderKind::Plot1x1, 3.0),
 				(comps::ProviderKind::Plot3x2, 3.0),
 				(comps::ProviderKind::Plot3x3, 3.0),
 			]
@@ -1198,6 +1231,7 @@ impl Map
 							*provider_pos,
 							self.size,
 							&walkable,
+							Some(&walk_speed),
 							false,
 						);
 						if !cand_tile_path.is_empty()
@@ -1248,7 +1282,14 @@ impl Map
 					cur_pos + Vector2::new(self.rng.gen_range(-3..=3), self.rng.gen_range(-3..=3));
 				target.x = utils::clamp(target.x, 0, self.size as i32 - 1);
 				target.y = utils::clamp(target.y, 0, self.size as i32 - 1);
-				let cand_tile_path = get_tile_path(cur_pos, target, self.size, &walkable, true);
+				let cand_tile_path = get_tile_path(
+					cur_pos,
+					target,
+					self.size,
+					&walkable,
+					Some(&walk_speed),
+					true,
+				);
 				tile_path.tile_path = cand_tile_path;
 				can_move.moving = true;
 			}
@@ -1289,7 +1330,9 @@ impl Map
 					.world
 					.query_one_mut::<(&comps::Position, &mut comps::Provider)>(provider_id)
 					.unwrap();
-    			let mine_money = 500 / self.crystal_distance[tile_to_idx(pixel_to_tile(position.pos), self.size).unwrap()];
+				let mine_money = 500
+					/ self.crystal_distance
+						[tile_to_idx(pixel_to_tile(position.pos), self.size).unwrap()];
 				match provider.kind
 				{
 					comps::ProviderKind::TakenHouse(_) =>
@@ -1346,7 +1389,7 @@ impl Map
 				agent.sleepyness += sleepyness_change;
 				if plot_complete.is_some()
 				{
-					println!("Finished");
+					//println!("Finished");
 					agent.cur_provider = None;
 				}
 			}
@@ -1368,7 +1411,7 @@ impl Map
 				self.world.remove_one::<comps::Plot>(provider_id)?;
 			}
 
-			println!("Work unit!");
+			//println!("Work unit!");
 		}
 		for (provider_id, change) in providers_to_change
 		{
@@ -1429,6 +1472,7 @@ impl Map
 							port_pos,
 							self.size,
 							&flyable,
+							None,
 							false,
 						);
 						blimp.state = comps::BlimpState::Arriving;
@@ -1456,6 +1500,7 @@ impl Map
 							Point2::new(warp_location.0, warp_location.1),
 							self.size,
 							&flyable,
+							None,
 							false,
 						);
 						blimp.state = comps::BlimpState::Leaving;
@@ -1481,6 +1526,10 @@ impl Map
 				{
 					num_to_spawn = 0;
 				}
+                if self.population == 0
+                {
+                    num_to_spawn = 2;
+                }
 				for _ in 0..num_to_spawn
 				{
 					spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
@@ -1530,7 +1579,7 @@ impl Map
 		to_die.dedup();
 		for id in to_die
 		{
-			println!("died {id:?}");
+			//println!("died {id:?}");
 			self.world.despawn(id)?;
 		}
 
@@ -1581,6 +1630,7 @@ impl Map
 							3 => self.want_mine = true,
 							4 => self.want_port = true,
 							5 => self.want_cafe = true,
+							6 => self.want_road = true,
 							7 =>
 							{
 								self.show_money_chart = !self.show_money_chart;

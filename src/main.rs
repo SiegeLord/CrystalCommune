@@ -10,7 +10,7 @@ mod error;
 mod game;
 mod game_state;
 //mod menu;
-//mod sfx;
+mod sfx;
 mod sprite;
 //mod ui;
 mod utils;

@@ -47,8 +47,10 @@ pub enum ProviderKind
 	Mine,
 	Port,
 	Cafe,
+	Plot1x1,
 	Plot3x2,
 	Plot3x3,
+    Road,
 }
 
 impl ProviderKind
@@ -62,8 +64,10 @@ impl ProviderKind
 			ProviderKind::Mine => (3, 3),
 			ProviderKind::Port => (3, 3),
 			ProviderKind::Cafe => (3, 2),
+			ProviderKind::Plot1x1 => (1, 1),
 			ProviderKind::Plot3x2 => (3, 2),
 			ProviderKind::Plot3x3 => (3, 3),
+			ProviderKind::Road => (1, 1),
 		}
 	}
 
@@ -76,8 +80,10 @@ impl ProviderKind
 			ProviderKind::Mine => 3,
 			ProviderKind::Port => 5,
 			ProviderKind::Cafe => 3,
+			ProviderKind::Plot1x1 => 2,
 			ProviderKind::Plot3x2 => 2,
 			ProviderKind::Plot3x3 => 2,
+			ProviderKind::Road => 1,
 		}
 	}
 
@@ -93,8 +99,10 @@ impl ProviderKind
 			ProviderKind::Mine => ("data/mine1.cfg", 0),
 			ProviderKind::Port => ("data/port.cfg", 0),
 			ProviderKind::Cafe => ("data/cafe.cfg", 0),
+			ProviderKind::Plot1x1 => ("data/plot_1x1.cfg", 0),
 			ProviderKind::Plot3x2 => ("data/plot_3x2.cfg", 0),
 			ProviderKind::Plot3x3 => ("data/plot_3x3.cfg", 0),
+			ProviderKind::Road => ("data/road.cfg", 0),
 		}
 	}
 
@@ -107,6 +115,23 @@ impl ProviderKind
 			ProviderKind::Mine => 1500,
 			ProviderKind::Port => 3000,
 			ProviderKind::Cafe => 1000,
+			ProviderKind::Road => 100,
+			ProviderKind::Plot1x1 => 0,
+			ProviderKind::Plot3x2 => 0,
+			ProviderKind::Plot3x3 => 0,
+		}
+	}
+	pub fn get_work_total(&self) -> i32
+	{
+		match self
+		{
+			ProviderKind::TakenHouse(_) => 0,
+			ProviderKind::EmptyHouse => 2,
+			ProviderKind::Mine => 5,
+			ProviderKind::Port => 5,
+			ProviderKind::Cafe => 3,
+			ProviderKind::Road => 1,
+			ProviderKind::Plot1x1 => 0,
 			ProviderKind::Plot3x2 => 0,
 			ProviderKind::Plot3x3 => 0,
 		}
