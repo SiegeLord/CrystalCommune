@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 static TILE_SIZE: i32 = 16;
 static MAX_SLEEPYNESS: i32 = 3000;
-static NUM_BUTTONS: i32 = 7;
+static MAX_HUNGER: i32 = 3000;
+static NUM_BUTTONS: i32 = 10;
 static MEAN_TICKS: i32 = 500;
 
 pub struct Game
@@ -345,6 +346,7 @@ struct Map
 	want_port: bool,
 	want_normal: bool,
 	want_destroy: bool,
+	want_cafe: bool,
 	want_house: bool,
 	want_mine: bool,
 
@@ -373,6 +375,7 @@ impl Map
 		state.cache_sprite("data/cursor.cfg")?;
 		state.cache_sprite("data/buttons.cfg")?;
 		state.cache_sprite("data/thought_sleepy.cfg")?;
+		state.cache_sprite("data/thought_hungry.cfg")?;
 		state.cache_sprite("data/plot_3x2.cfg")?;
 		state.cache_sprite("data/plot_3x3.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
@@ -388,6 +391,7 @@ impl Map
 		state.cache_sprite("data/port.cfg")?;
 		state.cache_sprite("data/blimp.cfg")?;
 		state.cache_sprite("data/building_placement.cfg")?;
+		state.cache_sprite("data/cafe.cfg")?;
 
 		for y in 0..size
 		{
@@ -461,6 +465,7 @@ impl Map
 			population: 0,
 			want_normal: false,
 			want_destroy: false,
+			want_cafe: false,
 			want_house: false,
 			want_port: false,
 			want_mine: false,
@@ -528,6 +533,10 @@ impl Map
 		{
 			build_kind = Some(comps::ProviderKind::Mine);
 		}
+		if state.controls.get_action_state(controls::Action::BuildCafe) > 0.5 || self.want_cafe
+		{
+			build_kind = Some(comps::ProviderKind::Cafe);
+		}
 		if self.want_normal
 		{
 			new_cursor = Some(CursorKind::Normal);
@@ -557,6 +566,7 @@ impl Map
 		}
 		self.want_normal = false;
 		self.want_destroy = false;
+		self.want_cafe = false;
 		self.want_house = false;
 		self.want_port = false;
 		self.want_mine = false;
@@ -800,7 +810,7 @@ impl Map
 			self.population += 1;
 			agent.hunger += 1;
 			agent.sleepyness += 1;
-			agent.hunger = utils::clamp(agent.hunger, 0, MAX_SLEEPYNESS);
+			agent.hunger = utils::clamp(agent.hunger, 0, MAX_HUNGER);
 			agent.sleepyness = utils::clamp(agent.sleepyness, 0, MAX_SLEEPYNESS);
 			if let Some(provider) = agent.cur_provider
 			{
@@ -836,7 +846,7 @@ impl Map
 			{
 				continue;
 			}
-			agent.time_to_think = state.time() + 5. + self.rng.gen::<f64>();
+			agent.time_to_think = state.time() + 7. + self.rng.gen::<f64>();
 			agent_draw.thought = None;
 
 			if let Some(provider) = agent.cur_provider.take()
@@ -844,7 +854,13 @@ impl Map
 				providers_to_change.push((provider, -1));
 			}
 
-			let mut actions = vec![(None, 1.0)];
+			let mut actions = vec![
+				(None, 1.0),
+				(
+					Some(comps::ProviderKind::Cafe),
+					5. * agent.hunger as f32 / MAX_HUNGER as f32,
+				),
+			];
 			if agent.house.is_some()
 			{
 				actions.push((
@@ -861,13 +877,17 @@ impl Map
 			}
 
 			for (kind, weight) in [
-				(comps::ProviderKind::Mine, 1.0),
+				(comps::ProviderKind::Mine, 2.0),
 				(
 					comps::ProviderKind::Port,
-					10. * (agent.sleepyness as f32 / MAX_SLEEPYNESS as f32).powf(4.),
+					10. * utils::max(
+						agent.hunger as f32 / MAX_HUNGER as f32,
+						agent.sleepyness as f32 / MAX_SLEEPYNESS as f32,
+					)
+					.powf(4.),
 				),
-				(comps::ProviderKind::Plot3x2, 2.0),
-				(comps::ProviderKind::Plot3x3, 2.0),
+				(comps::ProviderKind::Plot3x2, 3.0),
+				(comps::ProviderKind::Plot3x3, 3.0),
 			]
 			{
 				if kind_to_providers.contains_key(&kind)
@@ -943,9 +963,17 @@ impl Map
 				}
 				if !can_move.moving
 				{
-					if kind.is_house()
+					match kind
 					{
-						agent_draw.thought = Some("data/thought_sleepy.cfg".to_string());
+						comps::ProviderKind::EmptyHouse | comps::ProviderKind::TakenHouse(_) =>
+						{
+							agent_draw.thought = Some("data/thought_sleepy.cfg".to_string())
+						}
+						comps::ProviderKind::Cafe =>
+						{
+							agent_draw.thought = Some("data/thought_hungry.cfg".to_string())
+						}
+						_ => (),
 					}
 					println!("Failed to act!");
 				}
@@ -993,7 +1021,7 @@ impl Map
 			let mut hunger_change = 0;
 			let mut sleepyness_change = 0;
 
-			let mine_money = 50;
+			let mine_money = 150;
 			{
 				let (position, provider) = self
 					.world
@@ -1010,6 +1038,28 @@ impl Map
 							Color::from_rgb_f(0.4, 0.3, 0.9),
 						));
 					}
+					comps::ProviderKind::Cafe =>
+					{
+						if self.money < 50
+						{
+							indicators.push((
+								pixel_to_tile(position.pos) - Vector2::new(0, 1),
+								"No Money!".to_string(),
+								Color::from_rgb_f(0.8, 0.2, 0.3),
+							));
+						}
+						else
+						{
+							hunger_change = -500;
+							self.money -= 50;
+							let (text, color) = get_money_indicator(-50, true);
+							indicators.push((
+								pixel_to_tile(position.pos) - Vector2::new(0, 1),
+								text,
+								color,
+							));
+						}
+					}
 					comps::ProviderKind::Mine =>
 					{
 						self.money += mine_money;
@@ -1019,6 +1069,7 @@ impl Map
 							text,
 							color,
 						));
+						hunger_change = 50;
 					}
 					_ => hunger_change = 50,
 				}
@@ -1266,12 +1317,13 @@ impl Map
 							2 => self.want_house = true,
 							3 => self.want_mine = true,
 							4 => self.want_port = true,
-							5 =>
+							5 => self.want_cafe = true,
+							7 =>
 							{
 								self.show_money_chart = !self.show_money_chart;
 								self.show_pop_chart = false;
 							}
-							6 =>
+							8 =>
 							{
 								self.show_pop_chart = !self.show_pop_chart;
 								self.show_money_chart = false;
@@ -1332,7 +1384,7 @@ impl Map
 										.query_one_mut::<(&comps::Position, &comps::Provider)>(id)
 										.unwrap();
 									let position = position.clone();
-									let mut cost = provider.kind.get_cost();
+									let mut cost = 0;
 									if let Ok(plot) = self.world.query_one_mut::<&comps::Plot>(id)
 									{
 										cost = plot.kind.get_cost();

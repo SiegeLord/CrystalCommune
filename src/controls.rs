@@ -9,6 +9,7 @@ pub enum Action
 	BuildHouse,
     BuildMine,
     BuildPort,
+    BuildCafe,
     Destroy,
 }
 
@@ -21,6 +22,7 @@ impl Action
 			Action::BuildHouse => "BUILD HOUSE",
 			Action::BuildMine => "BUILD MINE",
 			Action::BuildPort => "BUILD PORT",
+			Action::BuildCafe => "BUILD CAFE",
 			Action::Destroy => "DESTROY",
 		}
 	}
@@ -475,6 +477,10 @@ impl Controls
 		action_to_inputs.insert(
 			Action::BuildPort,
 			[Some(Input::Keyboard(allegro::KeyCode::P)), None],
+		);
+		action_to_inputs.insert(
+			Action::BuildCafe,
+			[Some(Input::Keyboard(allegro::KeyCode::C)), None],
 		);
 		action_to_inputs.insert(
 			Action::BuildMine,
