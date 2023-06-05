@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::{astar, components as comps, controls, game_state, sprite, utils};
+use crate::{astar, components as comps, controls, game_state, sprite, ui, utils};
 use allegro::*;
 use allegro_font::*;
 use na::{
@@ -224,6 +224,7 @@ fn lower_heightmap(heightmap: &[i32]) -> Vec<i32>
 pub struct Game
 {
 	map: Map,
+	subscreens: Vec<ui::SubScreen>,
 }
 
 impl Game
@@ -232,6 +233,7 @@ impl Game
 	{
 		Ok(Self {
 			map: Map::new(state)?,
+			subscreens: vec![],
 		})
 	}
 
@@ -239,20 +241,122 @@ impl Game
 		&mut self, state: &mut game_state::GameState,
 	) -> Result<Option<game_state::NextScreen>>
 	{
-		self.map.logic(state)
+		if self.subscreens.is_empty()
+		{
+			self.map.logic(state)
+		}
+		else
+		{
+			Ok(None)
+		}
 	}
 
 	pub fn input(
 		&mut self, event: &Event, state: &mut game_state::GameState,
 	) -> Result<Option<game_state::NextScreen>>
 	{
-		self.map.input(event, state)
+		state.controls.decode_event(event);
+		match *event
+		{
+			Event::MouseAxes { x, y, .. } =>
+			{
+				if state.track_mouse
+				{
+					let (x, y) = state.transform_mouse(x as f32, y as f32);
+					state.mouse_pos = Point2::new(x as i32, y as i32);
+				}
+			}
+			_ => (),
+		}
+		if self.subscreens.is_empty()
+		{
+            let in_game_menu;
+			match *event
+			{
+				Event::KeyDown {
+					keycode: KeyCode::Escape,
+					..
+				} =>
+				{
+					in_game_menu = true;
+				}
+				_ =>
+				{
+					let res = self.map.input(event, state);
+					if let Ok(Some(game_state::NextScreen::InGameMenu)) = res
+					{
+						in_game_menu = true;
+					}
+                    else
+                    {
+                        return res;
+                    }
+				}
+			}
+			if in_game_menu
+			{
+				self.subscreens
+					.push(ui::SubScreen::InGameMenu(ui::InGameMenu::new(
+						state.buffer_width,
+						state.buffer_height,
+					)));
+				state.paused = true;
+			}
+		}
+		else
+		{
+			if let Some(action) = self
+				.subscreens
+				.last_mut()
+				.and_then(|s| s.input(state, event))
+			{
+				match action
+				{
+					ui::Action::Forward(subscreen_fn) =>
+					{
+						self.subscreens.push(subscreen_fn(
+							state,
+							state.buffer_width,
+							state.buffer_height,
+						));
+					}
+					ui::Action::MainMenu => return Ok(Some(game_state::NextScreen::Menu)),
+					ui::Action::Back =>
+					{
+						self.subscreens.pop().unwrap();
+					}
+					_ => (),
+				}
+			}
+			if self.subscreens.is_empty()
+			{
+				state.paused = false;
+			}
+		}
+		Ok(None)
 	}
 
 	pub fn draw(&mut self, state: &game_state::GameState) -> Result<()>
 	{
-		state.core.clear_to_color(Color::from_rgb_f(0.5, 0.5, 1.));
-		self.map.draw(state)?;
+		if let Some(subscreen) = self.subscreens.last_mut()
+		{
+			state.core.clear_to_color(Color::from_rgb_f(0.0, 0.0, 0.0));
+			subscreen.draw(state);
+
+			// This is dumb.
+			let sprite = state.get_sprite("data/cursor.cfg").unwrap();
+			sprite.draw(
+				to_f32(state.mouse_pos),
+				0,
+				Color::from_rgb_f(1., 1., 1.),
+				state,
+			);
+		}
+		else
+		{
+			state.core.clear_to_color(Color::from_rgb_f(0.5, 0.5, 1.));
+			self.map.draw(state)?;
+		}
 		Ok(())
 	}
 }
@@ -401,10 +505,15 @@ pub fn spawn_agent<T: Rng>(
 		},
 		comps::TilePath { tile_path: vec![] },
 		comps::AgentDraw {
-			sprite: ["data/cat1.cfg", "data/cat2.cfg", "data/duck.cfg"]
-				.choose(rng)
-				.unwrap()
-				.to_string(),
+			sprite: [
+				"data/cat1.cfg",
+				"data/cat2.cfg",
+				"data/duck.cfg",
+				"data/elephant.cfg",
+			]
+			.choose(rng)
+			.unwrap()
+			.to_string(),
 			visible: true,
 			thought: None,
 		},
@@ -564,7 +673,6 @@ struct Map
 	crystal_distance: Vec<i32>,
 	world: hecs::World,
 	rng: StdRng,
-	mouse_pos: Point2<i32>,
 	port: Option<hecs::Entity>,
 	blimp: Option<hecs::Entity>,
 	cursor_kind: CursorKind,
@@ -611,6 +719,7 @@ impl Map
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/terrain.cfg")?;
 		state.cache_sprite("data/cat1.cfg")?;
+		state.cache_sprite("data/elephant.cfg")?;
 		state.cache_sprite("data/cat2.cfg")?;
 		state.cache_sprite("data/duck.cfg")?;
 		state.cache_sprite("data/crystal1.cfg")?;
@@ -701,10 +810,6 @@ impl Map
 			terrain: terrain,
 			world: world,
 			rng: rng,
-			mouse_pos: Point2::new(
-				state.buffer_width as i32 / 2,
-				state.buffer_height as i32 / 2,
-			),
 			port: None,
 			blimp: None,
 			cursor_kind: CursorKind::Normal,
@@ -830,19 +935,19 @@ impl Map
 		self.want_mine = false;
 
 		// Camera.
-		if self.mouse_pos.x <= 0
+		if state.mouse_pos.x <= 0
 		{
 			self.camera_pos.x -= state.options.camera_speed;
 		}
-		if self.mouse_pos.x + 1 >= state.buffer_width as i32
+		if state.mouse_pos.x + 1 >= state.buffer_width as i32
 		{
 			self.camera_pos.x += state.options.camera_speed;
 		}
-		if self.mouse_pos.y <= 0
+		if state.mouse_pos.y <= 0
 		{
 			self.camera_pos.y -= state.options.camera_speed;
 		}
-		if self.mouse_pos.y + 1 >= state.buffer_height as i32
+		if state.mouse_pos.y + 1 >= state.buffer_height as i32
 		{
 			self.camera_pos.y += state.options.camera_speed;
 		}
@@ -931,7 +1036,7 @@ impl Map
 					)
 					.unwrap();
 				let tile_pos = pixel_to_tile(
-					self.mouse_pos + self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
+					state.mouse_pos + self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
 				);
 				let start_x = tile_pos.x - building_placement.width / 2;
 				let start_y = tile_pos.y - building_placement.height + 1;
@@ -1006,8 +1111,9 @@ impl Map
 				position.pos.y -= speed;
 				position.dir = 3;
 			}
-			if target == position.pos
+			if (to_f32(target) - to_f32(position.pos)).magnitude() <= 0.1 + speed as f32
 			{
+				position.pos = target;
 				tile_path.tile_path.pop().unwrap();
 			}
 		}
@@ -1330,7 +1436,7 @@ impl Map
 					.world
 					.query_one_mut::<(&comps::Position, &mut comps::Provider)>(provider_id)
 					.unwrap();
-				let mine_money = 500
+				let mine_money = 200
 					/ self.crystal_distance
 						[tile_to_idx(pixel_to_tile(position.pos), self.size).unwrap()];
 				match provider.kind
@@ -1381,15 +1487,24 @@ impl Map
 				}
 			}
 			{
-				let agent = self
+				let (position, agent) = self
 					.world
-					.query_one_mut::<&mut comps::Agent>(agent_id)
+					.query_one_mut::<(&mut comps::Position, &mut comps::Agent)>(agent_id)
 					.unwrap();
 				agent.hunger += hunger_change;
 				agent.sleepyness += sleepyness_change;
 				if plot_complete.is_some()
 				{
 					//println!("Finished");
+					state.sfx.play_positional_sound(
+						"data/done_building.ogg",
+						to_f32(position.pos),
+						to_f32(Point2::new(
+							self.camera_pos.x + state.buffer_width as i32 / 2,
+							self.camera_pos.y + state.buffer_height as i32 / 2,
+						)),
+						1.,
+					)?;
 					agent.cur_provider = None;
 				}
 			}
@@ -1526,10 +1641,22 @@ impl Map
 				{
 					num_to_spawn = 0;
 				}
-                if self.population == 0
-                {
-                    num_to_spawn = 2;
-                }
+				if self.population == 0
+				{
+					num_to_spawn = 2;
+				}
+				if num_to_spawn > 0
+				{
+					state.sfx.play_positional_sound(
+						"data/arrive.ogg",
+						to_f32(tile_to_pixel(port_pos)),
+						to_f32(Point2::new(
+							self.camera_pos.x + state.buffer_width as i32 / 2,
+							self.camera_pos.y + state.buffer_height as i32 / 2,
+						)),
+						1.,
+					)?;
+				}
 				for _ in 0..num_to_spawn
 				{
 					spawn_agent(port_pos, &mut self.world, state, &mut self.rng)?;
@@ -1553,6 +1680,21 @@ impl Map
 					}
 					to_die.push(agent_id);
 					num_left += 1;
+				}
+			}
+			if num_left > 0
+			{
+				if let Some(port_pos) = port_pos
+				{
+					state.sfx.play_positional_sound(
+						"data/leave.ogg",
+						to_f32(tile_to_pixel(port_pos)),
+						to_f32(Point2::new(
+							self.camera_pos.x + state.buffer_width as i32 / 2,
+							self.camera_pos.y + state.buffer_height as i32 / 2,
+						)),
+						1.,
+					)?;
 				}
 			}
 		}
@@ -1590,21 +1732,8 @@ impl Map
 		&mut self, event: &Event, state: &mut game_state::GameState,
 	) -> Result<Option<game_state::NextScreen>>
 	{
-		state.controls.decode_event(event);
 		match *event
 		{
-			Event::MouseAxes { x, y, .. } =>
-			{
-				let (x, y) = state.transform_mouse(x as f32, y as f32);
-				self.mouse_pos = Point2::new(x as i32, y as i32);
-			}
-			Event::KeyDown {
-				keycode: KeyCode::Escape,
-				..
-			} =>
-			{
-				self.want_normal = true;
-			}
 			Event::MouseButtonDown { button, .. } =>
 			{
 				let mut indicators = vec![];
@@ -1616,12 +1745,13 @@ impl Map
 					let right_x = state.buffer_width as i32 / 2 + offt;
 					let right_y = state.buffer_height as i32;
 
-					if self.mouse_pos.x >= left_x
-						&& self.mouse_pos.x < right_x
-						&& self.mouse_pos.y >= left_y
-						&& self.mouse_pos.y < right_y
+					if state.mouse_pos.x >= left_x
+						&& state.mouse_pos.x < right_x
+						&& state.mouse_pos.y >= left_y
+						&& state.mouse_pos.y < right_y
 					{
-						let button = (self.mouse_pos.x - left_x) / 16;
+						state.sfx.play_sound("data/ui1.ogg")?;
+						let button = (state.mouse_pos.x - left_x) / 16;
 						match button
 						{
 							0 => self.want_normal = true,
@@ -1641,6 +1771,7 @@ impl Map
 								self.show_pop_chart = !self.show_pop_chart;
 								self.show_money_chart = false;
 							}
+                            9 => return Ok(Some(game_state::NextScreen::InGameMenu)),
 							_ => (),
 						}
 					}
@@ -1664,11 +1795,15 @@ impl Map
 										building_placement.kind,
 									));
 								}
+								else
+								{
+									state.sfx.play_sound("data/error.ogg")?;
+								}
 							}
 							CursorKind::Destroy =>
 							{
 								let tile_pos = pixel_to_tile(
-									self.mouse_pos
+									state.mouse_pos
 										+ self.camera_pos + Vector2::new(TILE_SIZE, TILE_SIZE) / 2,
 								);
 								let mut to_die = None;
@@ -1692,6 +1827,7 @@ impl Map
 								}
 								if let Some(id) = to_die
 								{
+									state.sfx.play_sound("data/destroy.ogg")?;
 									let position =
 										self.world.query_one_mut::<&comps::Position>(id).unwrap();
 									let position = position.clone();
@@ -1712,6 +1848,7 @@ impl Map
 						{
 							if self.money >= kind.get_cost()
 							{
+								state.sfx.play_sound("data/building_placement.ogg")?;
 								spawn_provider(
 									position,
 									kind,
@@ -1725,6 +1862,7 @@ impl Map
 							}
 							else
 							{
+								state.sfx.play_sound("data/error.ogg")?;
 								indicators.push((
 									position,
 									"No Money!".to_string(),
@@ -1737,6 +1875,13 @@ impl Map
 					{
 						spawn_indicator(tile_pos, text, color, &mut self.world, state)?;
 					}
+				}
+				else if button == 2
+				{
+					state.sfx.play_sound("data/ui2.ogg")?;
+					self.want_normal = true;
+					self.show_money_chart = false;
+					self.show_pop_chart = false;
 				}
 			}
 			_ => (),
@@ -2032,7 +2177,7 @@ impl Map
 			CursorKind::Destroy => 1,
 		};
 		sprite.draw(
-			to_f32(self.mouse_pos),
+			to_f32(state.mouse_pos),
 			variant,
 			Color::from_rgb_f(1., 1., 1.),
 			state,

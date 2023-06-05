@@ -20,12 +20,12 @@ impl Action
 	{
 		match self
 		{
-			Action::BuildHouse => "BUILD HOUSE",
-			Action::BuildMine => "BUILD MINE",
-			Action::BuildPort => "BUILD PORT",
-			Action::BuildRoad => "BUILD ROAD",
-			Action::BuildCafe => "BUILD CAFE",
-			Action::Destroy => "DESTROY",
+			Action::BuildHouse => "House",
+			Action::BuildMine => "Mine",
+			Action::BuildPort => "Port",
+			Action::BuildRoad => "Road",
+			Action::BuildCafe => "Cafe",
+			Action::Destroy => "Destroy",
 		}
 	}
 }

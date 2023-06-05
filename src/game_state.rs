@@ -1,10 +1,11 @@
 use crate::error::Result;
-use crate::{atlas, controls, sprite, utils};
+use crate::{atlas, controls, sfx, sprite, utils};
 use allegro::*;
 use allegro_font::*;
 use allegro_image::*;
 use allegro_primitives::*;
 use allegro_ttf::*;
+use nalgebra::Point2;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ pub struct Options
 	pub vsync_method: i32,
 	pub sfx_volume: f32,
 	pub music_volume: f32,
-    pub camera_speed: i32,
+	pub camera_speed: i32,
 
 	pub controls: controls::Controls,
 }
@@ -31,26 +32,24 @@ impl Default for Options
 	{
 		Self {
 			fullscreen: true,
-			width: 1024,
-			height: 728,
+			width: 960,
+			height: 864,
 			play_music: true,
 			vsync_method: 2,
 			sfx_volume: 1.,
 			music_volume: 1.,
-            camera_speed: 4,
+			camera_speed: 4,
 			controls: controls::Controls::new(),
 		}
 	}
 }
 
+#[derive(Debug)]
 pub enum NextScreen
 {
-	Game
-	{
-		seed: u64,
-		restart_music: bool,
-	},
+	Game,
 	Menu,
+    InGameMenu,
 	Quit,
 }
 
@@ -64,7 +63,7 @@ pub struct GameState
 	pub tick: i64,
 	pub paused: bool,
 
-	//pub sfx: sfx::Sfx,
+	pub sfx: sfx::Sfx,
 	pub atlas: atlas::Atlas,
 	pub ui_font: Font,
 	//pub number_font: Font,
@@ -77,6 +76,8 @@ pub struct GameState
 	bitmaps: HashMap<String, Bitmap>,
 	sprites: HashMap<String, sprite::Sprite>,
 	pub controls: controls::ControlsHandler,
+	pub track_mouse: bool,
+	pub mouse_pos: Point2<i32>,
 }
 
 pub fn load_options(core: &Core) -> Result<Options>
@@ -117,7 +118,7 @@ pub fn save_options(core: &Core, options: &Options) -> Result<()>
 
 impl GameState
 {
-	pub fn new() -> Result<GameState>
+	pub fn new(buffer_width: f32, buffer_height: f32) -> Result<Self>
 	{
 		let core = Core::init()?;
 		core.set_app_name("CrystalCommune");
@@ -133,15 +134,15 @@ impl GameState
 		core.install_mouse()
 			.map_err(|_| "Couldn't install mouse".to_string())?;
 
-		let sfx = sfx::Sfx::new(options.sfx_volume, options.music_volume, &core)?;
+		let mut sfx = sfx::Sfx::new(options.sfx_volume, options.music_volume, &core)?;
+		sfx.set_music_file("data/lemonade-sinus.xm");
+		sfx.play_music()?;
 
-        let ui_font = Font::new_builtin(&font).map_err(|_| "Could't create builtin font.".to_string())?;
-		//let number_font = ttf
-		//	.load_ttf_font("data/MHTIROGLA.ttf", -32, TtfFlags::zero())
-		//	.map_err(|_| "Couldn't load 'data/advanced_pixel_lcd-7.ttf'".to_string())?;
+		let ui_font =
+			Font::new_builtin(&font).map_err(|_| "Could't create builtin font.".to_string())?;
 
 		let controls = controls::ControlsHandler::new(options.controls.clone());
-		Ok(GameState {
+		Ok(Self {
 			options: options,
 			core: core,
 			prim: prim,
@@ -155,14 +156,17 @@ impl GameState
 			paused: false,
 			atlas: atlas::Atlas::new(512),
 			ui_font: ui_font,
-			//number_font: number_font,
 			draw_scale: 1.,
 			display_width: 0.,
 			display_height: 0.,
-			buffer_width: 0.,
-			buffer_height: 0.,
-			//hide_mouse: false,
+			buffer_width: buffer_width,
+			buffer_height: buffer_height,
 			controls: controls,
+			track_mouse: true,
+			mouse_pos: Point2::new(
+				buffer_width as i32 / 2,
+				buffer_height as i32 / 2,
+			),
 		})
 	}
 

@@ -192,7 +192,7 @@ impl Sfx
 
 	pub fn set_music_volume(&mut self, new_volume: f32)
 	{
-		self.music_volume = 0.2 * new_volume;
+		self.music_volume = new_volume;
 		if let Some(stream) = self.stream.as_mut()
 		{
 			stream.set_gain(self.music_volume).unwrap();
@@ -201,6 +201,6 @@ impl Sfx
 
 	pub fn set_sfx_volume(&mut self, new_volume: f32)
 	{
-		self.sfx_volume = 0.2 * new_volume;
+		self.sfx_volume = new_volume;
 	}
 }

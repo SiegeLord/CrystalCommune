@@ -9,10 +9,10 @@ mod controls;
 mod error;
 mod game;
 mod game_state;
-//mod menu;
+mod menu;
 mod sfx;
 mod sprite;
-//mod ui;
+mod ui;
 mod utils;
 
 use crate::error::Result;
@@ -52,14 +52,16 @@ fn make_foil_shader(disp: &mut Display) -> Result<sync::Weak<Shader>>
 enum Screen
 {
 	Game(game::Game),
-	//Menu(menu::Menu),
+	Menu(menu::Menu),
 }
 
 fn real_main() -> Result<()>
 {
-	let mut state = game_state::GameState::new()?;
+	let buffer_width = 160;
+	let buffer_height = 144;
+	let mut state = game_state::GameState::new(buffer_width as f32, buffer_height as f32)?;
 
-	let mut flags = OPENGL | PROGRAMMABLE_PIPELINE;
+	let mut flags = OPENGL | RESIZABLE | PROGRAMMABLE_PIPELINE;
 
 	if state.options.fullscreen
 	{
@@ -78,9 +80,6 @@ fn real_main() -> Result<()>
 	let mut display = Display::new(&state.core, state.options.width, state.options.height)
 		.map_err(|_| "Couldn't create display".to_string())?;
 
-	let buffer_width = 160;
-	let buffer_height = 144;
-
 	let shader = make_foil_shader(&mut display)?;
     let time_bias = Bitmap::load(&state.core, "data/time_bias.png").map_err(|_| "Couldn't load 'data/time_bias.png'".to_string())?;
 	let buffer1 = Bitmap::new(&state.core, buffer_width, buffer_height).unwrap();
@@ -88,8 +87,6 @@ fn real_main() -> Result<()>
 
 	state.display_width = display.get_width() as f32;
 	state.display_height = display.get_height() as f32;
-	state.buffer_width = buffer_width as f32;
-	state.buffer_height = buffer_height as f32;
 	state.draw_scale = utils::min(
 		(display.get_width() as f32) / (buffer_width as f32),
 		(display.get_height() as f32) / (buffer_height as f32),
@@ -118,15 +115,16 @@ fn real_main() -> Result<()>
 
 	let mut quit = false;
 	let mut draw = true;
-	//~ let mut rng = thread_rng();
 
-	let mut cur_screen = Screen::Game(game::Game::new(
+	let mut cur_screen = Screen::Menu(menu::Menu::new(
 		&mut state,
 	)?);
+	//let mut cur_screen = Screen::Game(game::Game::new(
+	//	&mut state,
+	//)?);
 
 	let mut logics_without_draw = 0;
 	let mut old_fullscreen = state.options.fullscreen;
-	//let mut old_mouse_hide = state.hide_mouse;
 	let mut prev_frame_start = state.core.get_time();
     state.core.grab_mouse(&display).ok();
     display.show_cursor(false).ok();
@@ -154,6 +152,7 @@ fn real_main() -> Result<()>
 			match &mut cur_screen
 			{
 				Screen::Game(game) => game.draw(&state)?,
+				Screen::Menu(menu) => menu.draw(&state)?,
 			}
 
 			if state.options.vsync_method == 2
@@ -235,6 +234,7 @@ fn real_main() -> Result<()>
 		let mut next_screen = match &mut cur_screen
 		{
 			Screen::Game(game) => game.input(&event, &mut state)?,
+			Screen::Menu(menu) => menu.input(&event, &mut state)?,
 		};
 
 		match event
@@ -250,11 +250,19 @@ fn real_main() -> Result<()>
             {
                 state.core.grab_mouse(&display).ok();
                 display.show_cursor(false).ok();
+                state.track_mouse = true;
             }
             Event::DisplaySwitchOut { .. } =>
             {
                 state.core.ungrab_mouse().ok();
                 display.show_cursor(true).ok();
+                state.track_mouse = false;
+            }
+			Event::MouseButtonDown { .. } =>
+			{
+                state.core.grab_mouse(&display).ok();
+                display.show_cursor(false).ok();
+                state.track_mouse = true;
             }
 			Event::TimerTick { .. } =>
 			{
@@ -268,7 +276,7 @@ fn real_main() -> Result<()>
 					next_screen = match &mut cur_screen
 					{
 						Screen::Game(game) => game.logic(&mut state)?,
-						//_ => None,
+						_ => None,
 					}
 				}
 
@@ -279,7 +287,7 @@ fn real_main() -> Result<()>
 				}
 
 				logics_without_draw += 1;
-				//state.sfx.update_sounds()?;
+				state.sfx.update_sounds()?;
 
 				if !state.paused
 				{
@@ -290,37 +298,29 @@ fn real_main() -> Result<()>
 			_ => (),
 		}
 
-		//if let Some(next_screen) = next_screen
-		//{
-		//	match next_screen
-		//	{
-		//		game_state::NextScreen::Game {
-		//			seed,
-		//			restart_music,
-		//		} =>
-		//		{
-		//			cur_screen = CurScreen::Game(map::Map::new(
-		//				&mut state,
-		//				buffer_width as f32,
-		//				buffer_height as f32,
-		//				seed,
-		//				restart_music,
-		//			)?);
-		//		}
-		//		game_state::NextScreen::Menu =>
-		//		{
-		//			cur_screen = CurScreen::Menu(menu::Menu::new(
-		//				&mut state,
-		//				buffer_width as f32,
-		//				buffer_height as f32,
-		//			)?);
-		//		}
-		//		game_state::NextScreen::Quit =>
-		//		{
-		//			quit = true;
-		//		}
-		//	}
-		//}
+		if let Some(next_screen) = next_screen
+		{
+			match next_screen
+			{
+				game_state::NextScreen::Game =>
+				{
+					cur_screen = Screen::Game(game::Game::new(
+						&mut state,
+					)?);
+				}
+				game_state::NextScreen::Menu =>
+				{
+					cur_screen = Screen::Menu(menu::Menu::new(
+						&mut state,
+					)?);
+				}
+				game_state::NextScreen::Quit =>
+				{
+					quit = true;
+				}
+                _ => panic!("Unknown next screen {:?}", next_screen),
+			}
+		}
 	}
 
 	Ok(())
