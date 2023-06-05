@@ -174,3 +174,6 @@ pub struct Indicator
 	pub text: String,
 	pub color: Color,
 }
+
+#[derive(Debug, Clone)]
+pub struct Crystal;

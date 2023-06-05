@@ -17,6 +17,210 @@ static MAX_HUNGER: i32 = 3000;
 static NUM_BUTTONS: i32 = 10;
 static MEAN_TICKS: i32 = 500;
 
+fn diamond_square<R: Rng>(size: i32, rng: &mut R) -> Vec<i32>
+{
+	assert!(size >= 0);
+	let real_size = 2i32.pow(size as u32) + 1;
+	dbg!(real_size);
+
+	let global_max_height = 8;
+
+	let mut heightmap = vec![-1i32; (real_size * real_size) as usize];
+
+	//~ for stage in 0..=2
+	for stage in 0..=size
+	{
+		let num_cells = 2i32.pow(stage as u32);
+		let spacing = (real_size - 1) / num_cells;
+		//~ dbg!(stage);
+		//~ dbg!(spacing);
+
+		// Square
+		for y_idx in 0..=num_cells
+		{
+			for x_idx in 0..=num_cells
+			{
+				let y = y_idx * spacing;
+				let x = x_idx * spacing;
+				if heightmap[(x + y * real_size) as usize] == -1
+				{
+					let mut min_height = 0;
+					let mut max_height = global_max_height;
+					let mut mean_height = 0.;
+					let mut count = 0;
+
+					//~ println!();
+
+					// Check the diag corners
+					for sy in [-1, 1]
+					{
+						for sx in [-1, 1]
+						{
+							let cx = x + sx * spacing;
+							let cy = y + sy * spacing;
+							if cx >= 0 && cy >= 0 && cx < real_size && cy < real_size
+							{
+								let val = heightmap[(cx + cy * real_size) as usize];
+								if val >= 0
+								{
+									min_height = utils::max(min_height, val - spacing);
+									max_height = utils::min(max_height, val + spacing);
+								}
+							}
+						}
+					}
+
+					// Check the rect corners
+					for [sx, sy] in [[-1, 0], [0, -1], [1, 0], [0, 1]]
+					{
+						let cx = x + sx * spacing;
+						let cy = y + sy * spacing;
+						if cx >= 0 && cy >= 0 && cx < real_size && cy < real_size
+						{
+							let val = heightmap[(cx + cy * real_size) as usize];
+							if val >= 0
+							{
+								min_height = utils::max(min_height, val - spacing);
+								max_height = utils::min(max_height, val + spacing);
+
+								mean_height =
+									(mean_height * count as f32 + val as f32) / (count + 1) as f32;
+								count += 1;
+							}
+						}
+					}
+
+					if count > 0
+					{
+						// TODO: Check this jitter values.
+						min_height = utils::max(min_height, mean_height as i32 - 2);
+						max_height = utils::min(max_height, mean_height as i32 + 2);
+					}
+
+					//~ dbg!(stage, x, y, min_height, max_height);
+					let new_val = rng.gen_range(min_height..=max_height);
+					//~ dbg!(new_val);
+					heightmap[(x + y * real_size) as usize] = new_val;
+				}
+			}
+		}
+
+		// Diamond
+		for y_idx in 0..num_cells
+		{
+			for x_idx in 0..num_cells
+			{
+				let y = y_idx * spacing + spacing / 2;
+				let x = x_idx * spacing + spacing / 2;
+				if heightmap[(x + y * real_size) as usize] == -1
+				{
+					let mut min_height = 0;
+					let mut max_height = global_max_height;
+					let mut mean_height = 0.;
+					let mut count = 0;
+					//~ println!();
+					// Check the diag corners
+					for sy in [-1, 1]
+					{
+						for sx in [-1, 1]
+						{
+							let cx = x + sx * spacing / 2;
+							let cy = y + sy * spacing / 2;
+							if cx >= 0 && cy >= 0 && cx < real_size && cy < real_size
+							{
+								let val = heightmap[(cx + cy * real_size) as usize];
+								if val >= 0
+								{
+									min_height = utils::max(min_height, val - spacing / 2);
+									max_height = utils::min(max_height, val + spacing / 2);
+
+									mean_height = (mean_height * count as f32 + val as f32)
+										/ (count + 1) as f32;
+									count += 1;
+								}
+							}
+						}
+					}
+
+					// Check the rect corners
+					for [sx, sy] in [[-1, 0], [0, -1], [1, 0], [0, 1]]
+					{
+						let cx = x + sx * spacing;
+						let cy = y + sy * spacing;
+						if cx >= 0 && cy >= 0 && cx < real_size && cy < real_size
+						{
+							let val = heightmap[(cx + cy * real_size) as usize];
+							if val >= 0
+							{
+								min_height = utils::max(min_height, val - spacing);
+								max_height = utils::min(max_height, val + spacing);
+							}
+						}
+					} // 3, 3
+
+					if count > 0
+					{
+						// TODO: Check this jitter values.
+						min_height = utils::max(min_height, mean_height as i32 - 2);
+						max_height = utils::min(max_height, mean_height as i32 + 2);
+					}
+					//~ dbg!(x, y, stage, min_height, max_height);
+					let new_val = rng.gen_range(min_height..=max_height);
+					//~ dbg!(new_val);
+					heightmap[(x + y * real_size) as usize] = new_val;
+				}
+			}
+		}
+	}
+	heightmap
+}
+
+fn smooth_heightmap(heightmap: &[i32]) -> Vec<i32>
+{
+	let real_size = (heightmap.len() as f32).sqrt() as i32;
+	let mut res = vec![0; heightmap.len()];
+	for y in 0..real_size
+	{
+		for x in 0..real_size
+		{
+			let mut mean_height = 0.;
+			let mut count = 0;
+			for sy in [-1, 1]
+			{
+				for sx in [-1, 1]
+				{
+					let cx = x + sx;
+					let cy = y + sy;
+					if cx >= 0 && cy >= 0 && cx < real_size && cy < real_size
+					{
+						let val = heightmap[(cx + cy * real_size) as usize];
+						mean_height =
+							(mean_height * count as f32 + val as f32) / (count + 1) as f32;
+						count += 1;
+					}
+				}
+			}
+			res[(x + y * real_size) as usize] = mean_height as i32;
+		}
+	}
+	res
+}
+
+fn lower_heightmap(heightmap: &[i32]) -> Vec<i32>
+{
+	let mut min_height = 1000;
+	for v in heightmap
+	{
+		min_height = utils::min(*v, min_height);
+	}
+	let mut res = heightmap.to_vec();
+	for v in &mut res
+	{
+		*v -= min_height;
+	}
+	res
+}
+
 pub struct Game
 {
 	map: Map,
@@ -260,6 +464,28 @@ pub fn spawn_provider<T: Rng>(
 	Ok(entity)
 }
 
+pub fn spawn_crystal<T: Rng>(
+	tile_pos: Point2<i32>, world: &mut hecs::World, rng: &mut T,
+) -> Result<hecs::Entity>
+{
+	let sprite = ["data/crystal1.cfg", "data/crystal2.cfg"]
+		.choose(rng)
+		.unwrap();
+
+	let entity = world.spawn((
+		comps::Position {
+			pos: tile_to_pixel(tile_pos),
+			dir: 0,
+		},
+		comps::SceneryDraw {
+			sprite: sprite.to_string(),
+			variant: 0,
+		},
+		comps::Crystal,
+	));
+	Ok(entity)
+}
+
 pub fn spawn_building_placement(
 	tile_pos: Point2<i32>, kind: comps::ProviderKind, world: &mut hecs::World,
 ) -> Result<hecs::Entity>
@@ -333,6 +559,7 @@ struct Map
 {
 	size: usize,
 	terrain: Vec<bool>,
+	crystal_distance: Vec<i32>,
 	world: hecs::World,
 	rng: StdRng,
 	mouse_pos: Point2<i32>,
@@ -367,9 +594,7 @@ impl Map
 {
 	fn new(state: &mut game_state::GameState) -> Result<Self>
 	{
-		let size = 16;
-		let mut terrain = Vec::with_capacity(size * size);
-		let mut rng = StdRng::seed_from_u64(0);
+		let mut rng = StdRng::seed_from_u64(thread_rng().gen::<u16>() as u64);
 
 		state.cache_sprite("data/chart.cfg")?;
 		state.cache_sprite("data/cursor.cfg")?;
@@ -393,6 +618,19 @@ impl Map
 		state.cache_sprite("data/building_placement.cfg")?;
 		state.cache_sprite("data/cafe.cfg")?;
 
+		let size: i32 = 32;
+
+		let heightmap = diamond_square(size.ilog2() as i32, &mut rng);
+		let heightmap = smooth_heightmap(&heightmap);
+		let heightmap = lower_heightmap(&heightmap);
+		let max = *heightmap.iter().reduce(std::cmp::max).unwrap() as f32;
+		let real_size = (heightmap.len() as f32).sqrt() as i32;
+
+		let mut terrain = Vec::with_capacity((size * size) as usize);
+		let mut crystal_distance = Vec::with_capacity((size * size) as usize);
+
+		let mut crystal_positions = vec![];
+		let mut world = hecs::World::new();
 		for y in 0..size
 		{
 			for x in 0..size
@@ -403,45 +641,48 @@ impl Map
 				}
 				else
 				{
-					//true
-					rng.gen_bool(0.9)
+					let f = (-((x as f32 - size as f32 / 2.).powf(2.)
+						+ (y as f32 - size as f32 / 2.).powf(2.))
+						/ 100.)
+						.exp();
+					(heightmap[(y * real_size + x) as usize] + (max as f32 * 1. * f) as i32)
+						> (0.4 * max) as i32
 				};
+				if val
+					&& rng.gen_bool(0.1) && ((x as i32 - size / 2).abs()
+					+ (y as i32 - size / 2))
+					.abs() > 5
+				{
+					let pos = Point2::new(x as i32, y as i32);
+					spawn_crystal(pos, &mut world, &mut rng)?;
+					crystal_positions.push(pos);
+				}
 				terrain.push(val)
 			}
 		}
-		let mut world = hecs::World::new();
-		let from = Point2::new(1, 1);
+
+		for y in 0..size
+		{
+			for x in 0..size
+			{
+                let mut min_dist = size;
+                let tile_pos = Point2::new(x as f32, y as f32);
+                for crystal_pos in &crystal_positions
+                {
+                    let dist = (to_f32(*crystal_pos) - tile_pos).magnitude() as i32;
+                    min_dist = utils::min(dist, min_dist);
+                }
+                crystal_distance.push(min_dist);
+            }
+        }
+
+		let from = Point2::new(size / 2, size / 2);
 		//terrain[tile_to_idx(from, size).unwrap()] = true;
 		spawn_agent(from, &mut world, state, &mut rng)?;
-		let from = Point2::new(9, 1);
+		let from = Point2::new(size / 2 + 1, size / 2);
 		spawn_agent(from, &mut world, state, &mut rng)?;
 
-		//spawn_provider(
-		//	Point2::new(7, 7),
-		//	comps::ProviderKind::EmptyHouse,
-		//	&mut world,
-		//	state,
-		//)?;
-		//spawn_provider(
-		//	Point2::new(6, 2),
-		//	comps::ProviderKind::EmptyHouse,
-		//	&mut world,
-		//	state,
-		//)?;
-		//spawn_provider(
-		//	Point2::new(2, 6),
-		//	comps::ProviderKind::Mine,
-		//	&mut world,
-		//	state,
-		//)?;
-		//spawn_provider(
-		//	Point2::new(4, 5),
-		//	comps::ProviderKind::Mine,
-		//	&mut world,
-		//	state,
-		//)?;
-		//
-		let start_money = 10000;
+		let start_money = 20000;
 		let mut money_history = vec![0; 16];
 		let l = money_history.len();
 		money_history[l - 1] = start_money;
@@ -452,15 +693,21 @@ impl Map
 		pop_history[l - 1] = start_pop;
 
 		Ok(Self {
-			size: size,
+			size: size as usize,
 			terrain: terrain,
 			world: world,
 			rng: rng,
-			mouse_pos: Point2::new(0, 0),
+			mouse_pos: Point2::new(
+				state.buffer_width as i32 / 2,
+				state.buffer_height as i32 / 2,
+			),
 			port: None,
 			blimp: None,
 			cursor_kind: CursorKind::Normal,
-			camera_pos: Vector2::new(0, 0),
+			camera_pos: Vector2::new(
+				size as i32 / 2 * TILE_SIZE - state.buffer_width as i32 / 2,
+				size as i32 / 2 * TILE_SIZE - state.buffer_height as i32 / 2,
+			),
 			money: start_money,
 			population: 0,
 			want_normal: false,
@@ -479,6 +726,7 @@ impl Map
 			pop_mean_count: 0,
 			pop_history_len: 1,
 			pop_history: pop_history,
+            crystal_distance: crystal_distance,
 		})
 	}
 
@@ -603,6 +851,21 @@ impl Map
 		let mut buildable = self.terrain.clone();
 		let mut walkable = self.terrain.clone();
 		let flyable = vec![true; buildable.len()];
+		for (_, (position, _)) in self
+			.world
+			.query::<(&comps::Position, &comps::Crystal)>()
+			.iter()
+		{
+			let tile_pos = pixel_to_tile(position.pos);
+			for dy in [0, -1]
+			{
+				if let Some(idx) = tile_to_idx(Point2::new(tile_pos.x, tile_pos.y + dy), self.size)
+				{
+					buildable[idx] = false;
+					walkable[idx] = false;
+				}
+			}
+		}
 		for (_, (position, provider)) in self
 			.world
 			.query::<(&comps::Position, &comps::Provider)>()
@@ -1021,12 +1284,12 @@ impl Map
 			let mut hunger_change = 0;
 			let mut sleepyness_change = 0;
 
-			let mine_money = 150;
 			{
 				let (position, provider) = self
 					.world
 					.query_one_mut::<(&comps::Position, &mut comps::Provider)>(provider_id)
 					.unwrap();
+    			let mine_money = 500 / self.crystal_distance[tile_to_idx(pixel_to_tile(position.pos), self.size).unwrap()];
 				match provider.kind
 				{
 					comps::ProviderKind::TakenHouse(_) =>
@@ -1379,10 +1642,8 @@ impl Map
 								}
 								if let Some(id) = to_die
 								{
-									let (position, provider) = self
-										.world
-										.query_one_mut::<(&comps::Position, &comps::Provider)>(id)
-										.unwrap();
+									let position =
+										self.world.query_one_mut::<&comps::Position>(id).unwrap();
 									let position = position.clone();
 									let mut cost = 0;
 									if let Ok(plot) = self.world.query_one_mut::<&comps::Plot>(id)
